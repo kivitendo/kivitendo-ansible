@@ -1,0 +1,193 @@
+---
+- name: Install Kivi dependencies
+  hosts: all
+  become: true
+
+  vars_files:
+    vars.yml
+
+  handlers:
+    - name: Enable SSL
+      ansible.builtin.command: a2ensite default-ssl
+      notify: Restart apache
+      when: install_SSL
+
+    - name: Restart apache
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+
+    - name: Start postgresql
+      ansible.builtin.service:
+        name: postgresql
+        state: restarted
+
+  tasks:
+
+    - name: Update repos and install dependencies.
+      ansible.builtin.apt:
+        name:
+          - git
+          - libalgorithm-checkdigits-perl
+          - libapache2-mod-fcgid
+          - libarchive-zip-perl
+          - libcam-pdf-perl
+          - libcgi-pm-perl
+          - libclone-perl
+          - libconfig-std-perl
+          - libcrypt-pbkdf2-perl
+          - libdaemon-generic-perl
+          - libdatetime-event-cron-perl
+          - libdatetime-perl
+          - libdatetime-set-perl
+          - libdbd-pg-perl
+          - libdbi-perl
+          - libemail-address-perl
+          - libemail-mime-perl
+          - libexception-class-perl
+          - libfcgi-perl
+          - libfile-copy-recursive-perl
+          - libfile-flock-perl
+          - libfile-mimeinfo-perl
+          - libfile-slurp-perl
+          - libgd-gd2-perl
+          - libhtml-restrict-perl
+          - libimage-info-perl
+          - libimager-perl
+          - libimager-qrcode-perl
+          - libipc-run-perl
+          - libjson-perl
+          - liblist-moreutils-perl
+          - liblist-utilsby-perl
+          - libmath-round-perl
+          - libnet-smtp-ssl-perl
+          - libnet-sslglue-perl
+          - libparams-validate-perl
+          - libpbkdf2-tiny-perl
+          - libpdf-api2-perl
+          - libregexp-ipv6-perl
+          - librest-client-perl
+          - librose-db-object-perl
+          - librose-db-perl
+          - librose-object-perl
+          - libset-infinite-perl
+          - libsort-naturally-perl
+          - libstring-shellquote-perl
+          - libtemplate-perl
+          - libtext-csv-xs-perl
+          - libtext-iconv-perl
+          - libtext-unidecode-perl
+          - libtry-tiny-perl
+          - liburi-perl
+          - libwww-perl
+          - libxml-libxml-perl
+          - libxml-writer-perl
+          - libyaml-perl
+          - texlive-full
+          - poppler-utils
+        state: present
+        update_cache: true
+
+  #  postrgesql for kivi
+    - name: Install postgresql.
+      ansible.builtin.apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: present
+      notify: Start postgresql
+
+    - name: Allow acces from localhost.
+      ansible.builtin.postgresql_pg_hba:
+        contype: host
+        users: all
+        databases: all
+        address: 127.0.0.1
+        method: trust
+        dest: /etc/postgresql/14/main/pg_hba.conf
+        
+
+  # apache server for kivi
+    - name: Install apache server.
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+
+    - name: Copy config files.
+      ansible.builtin.copy:
+        src: config-files/apache/no-ssl/000-default.conf
+        dest: /etc/apache2/sites-available/000-default.conf
+        mode: '640'
+      notify: Restart apache
+      when: not install_SSL
+
+    - name: Copy config files.
+      ansible.builtin.template:
+        src: "config-files/apache/ssl/{{ item }}"
+        dest: "/etc/apache2/sites-available/{{ item }}"
+        mode: '640'
+      loop:
+        - default-ssl.conf
+        - 000-default.conf
+      notify: Restart apache
+      when: install_SSL
+
+    - name: Activate fastcgi and headers modules.
+      community.general.apache2_module:
+        state: present
+        name: "{{ item }}"
+      loop:
+        - fcgid
+        - cgid
+        - headers
+      notify: Restart apache
+      when: not install_SSL
+
+    - name: Activate fastcgi, headers and ssl modules.
+      community.general.apache2_module:
+        state: present
+        name: "{{ item }}"
+      loop:
+        - fcgid
+        - cgid
+        - headers
+        - ssl
+      notify: Enable SSL
+      when: install_SSL
+
+  # install Kivi
+    - name: Ensure git is installed.
+      ansible.builtin.apt:
+        name: git
+        state: present
+
+    - name: Clone repo.
+      ansible.builtin.git:
+        repo: 'https://github.com/kivitendo/kivitendo-erp.git'
+        dest: /var/www/kivitendo-erp
+        version: release-3.8.0
+
+    - name: Copy config files.
+      ansible.builtin.copy:
+        src: config-files/kivitendo.conf
+        dest: /var/www/kivitendo-erp/config/kivitendo.conf
+        mode: "0664"
+      notify: Restart apache
+
+    - name: Make webdav directory.
+      ansible.builtin.file:
+        path: /var/www/kivitendo-erp/webdav
+        state: directory
+        mode: "0775"
+
+    - name: Change permissions.
+      ansible.builtin.file:
+        owner: www-data
+        path: "/var/www/kivitendo-erp/{{ item }}"
+        mode: "0775"
+      loop:
+        - users
+        - spool
+        - webdav
+
+# vim: set ft=yaml.ansible
