@@ -87,74 +87,7 @@
           - poppler-utils
         state: present
         update_cache: true
-
-  #  postrgesql for kivi
-    - name: Install postgresql.
-      ansible.builtin.apt:
-        name:
-          - postgresql
-          - postgresql-contrib
-        state: present
-      notify: Start postgresql
-
-    - name: Allow acces from localhost.
-      ansible.builtin.postgresql_pg_hba:
-        contype: host
-        users: all
-        databases: all
-        address: 127.0.0.1
-        method: trust
-        dest: /etc/postgresql/14/main/pg_hba.conf
-        
-
-  # apache server for kivi
-    - name: Install apache server.
-      ansible.builtin.apt:
-        name: apache2
-        state: present
-
-    - name: Copy config files.
-      ansible.builtin.copy:
-        src: config-files/apache/no-ssl/000-default.conf
-        dest: /etc/apache2/sites-available/000-default.conf
-        mode: '640'
-      notify: Restart apache
-      when: not install_SSL
-
-    - name: Copy config files.
-      ansible.builtin.template:
-        src: "config-files/apache/ssl/{{ item }}"
-        dest: "/etc/apache2/sites-available/{{ item }}"
-        mode: '640'
-      loop:
-        - default-ssl.conf
-        - 000-default.conf
-      notify: Restart apache
-      when: install_SSL
-
-    - name: Activate fastcgi and headers modules.
-      community.general.apache2_module:
-        state: present
-        name: "{{ item }}"
-      loop:
-        - fcgid
-        - cgid
-        - headers
-      notify: Restart apache
-      when: not install_SSL
-
-    - name: Activate fastcgi, headers and ssl modules.
-      community.general.apache2_module:
-        state: present
-        name: "{{ item }}"
-      loop:
-        - fcgid
-        - cgid
-        - headers
-        - ssl
-      notify: Enable SSL
-      when: install_SSL
-
+          
   # install Kivi
     - name: Ensure git is installed.
       ansible.builtin.apt:
@@ -189,5 +122,71 @@
         - users
         - spool
         - webdav
+
+
+  #  postrgesql for kivi
+    - name: Install postgresql.
+      ansible.builtin.apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: present
+      notify: Start postgresql
+
+    - name: Allow acces from localhost.
+      ansible.builtin.postgresql_pg_hba:
+        contype: host
+        users: all
+        databases: all
+        address: 127.0.0.1
+        method: trust
+        dest: /etc/postgresql/14/main/pg_hba.conf
+        
+
+  # apache server for kivi
+    - name: Install apache server.
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+
+    - name: Activate fastcgi and headers modules.
+      community.general.apache2_module:
+        state: present
+        name: "{{ item }}"
+      loop:
+        - fcgid
+        - headers
+      notify: Restart apache
+      when: not install_SSL
+
+    - name: Activate fastcgi, headers and ssl modules.
+      community.general.apache2_module:
+        state: present
+        name: "{{ item }}"
+      loop:
+        - fcgid
+        - headers
+        - ssl
+      notify: Enable SSL
+      when: install_SSL
+
+    - name: Copy config files.
+      ansible.builtin.copy:
+        src: config-files/apache/no-ssl/000-default.conf
+        dest: /etc/apache2/sites-available/000-default.conf
+        mode: '640'
+      notify: Restart apache
+      when: not install_SSL
+
+    - name: Copy config files.
+      ansible.builtin.template:
+        src: "config-files/apache/ssl/{{ item }}"
+        dest: "/etc/apache2/sites-available/{{ item }}"
+        mode: '640'
+      loop:
+        - default-ssl.conf
+        - 000-default.conf
+      notify: Restart apache
+      when: install_SSL
 
 # vim: set ft=yaml.ansible
