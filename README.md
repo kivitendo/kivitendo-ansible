@@ -11,6 +11,12 @@ For more information on ansible visit their [official documentation](https://doc
 
 ## Usage
 
+First clone this repo with: 
+```
+git clone https://github.com/kivitendo/kivitendo-ansible.git
+cd kivitendo-ansible
+```
+
 To run the playbook simply enter the IP of your machine into the inventory file.
 
 Then run the following command:
