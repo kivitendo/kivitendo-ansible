@@ -4,7 +4,9 @@ This repo provides an ansible playbook for a convenient way to install
 [kivitendo-erp](https://github.com/kivitendo/kivitendo-erp) on Ubuntu 22.04.
 
 This playbook needs ansible version >=2.10 to work.
+
 (It was developed on a control node running Ubuntu 22.04)
+
 For more information on ansible visit their [official documentation](https://docs.ansible.com/).
 
 ## Usage
