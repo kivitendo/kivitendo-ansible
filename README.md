@@ -1,4 +1,4 @@
-# Ansible Script for Installing Kivitendo
+# Ansible Script for Installing kivitendo on Ubuntu 22.04
 
 This repo provides an ansible playbook for a convenient way to install
 [kivitendo-erp](https://github.com/kivitendo/kivitendo-erp) on Ubuntu 22.04.
