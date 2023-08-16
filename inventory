@@ -1,2 +1,9 @@
-example.org
+# Add the IP or domain of your target machine below e.g.
+# example.org
+# or
+# 192.168.121.1
+#
+# aditional information for ssh connection (e.g. port, user, key file) can be entered like this
+# three.example.com:2222 ansible_user=myuser ansible_ssh_private_key_file=/path/to/key/file 
+
 #vim: set ft=ini
