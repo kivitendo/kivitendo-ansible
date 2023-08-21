@@ -173,8 +173,11 @@
         mode: '640'
       loop:
         - default-ssl.conf
-        - 000-default.conf
       notify: Restart apache
       when: install_SSL
+    
+    - name: Disable 000-default.conf
+      shell: a2dissite 000-default.conf
+      when: install_ssl 
 
 # vim: set ft=yaml.ansible
