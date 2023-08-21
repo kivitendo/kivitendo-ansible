@@ -87,6 +87,7 @@
           - poppler-utils
           - postgresql
           - postgresql-contrib
+          - python3-passlib
           - texlive-full
         state: present
         update_cache: true
@@ -158,8 +159,15 @@
       notify: Enable SSL
       when: install_SSL
 
+    - name: Add a user to a password file suitable for use by libpam-pwdfile
+      community.general.htpasswd:
+        path: /etc/apache2/.htpasswd
+        name: "{{ basic_auth.user }}"
+        password: "{{ basic_auth.password }}"
+      when: basic_auth
+
     - name: Copy over apache config files.
-      ansible.builtin.copy:
+      ansible.builtin.template:
         src: config-files/apache/no-ssl/000-default.conf
         dest: /etc/apache2/sites-available/000-default.conf
         mode: '640'
@@ -178,6 +186,6 @@
     
     - name: Disable 000-default.conf
       shell: a2dissite 000-default.conf
-      when: install_ssl 
+      when: install_SSL 
 
 # vim: set ft=yaml.ansible

@@ -4,3 +4,9 @@ ssl:
   CertFile: /etc/ssl/certs/SSLCert.crt
   CertKey: /etc/ssl/private/Private.key
   ChainFile: /etc/ssl/certs/Intermediate.crt
+
+use_basic_auth: true
+
+basic_auth:
+  user: user
+  password: changeme
