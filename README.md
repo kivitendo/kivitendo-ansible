@@ -35,6 +35,12 @@ For SSL encryption to work you **first** need to have the necessary files (e.g.
 the certificates) in place before running the playbook.
 Now you have to adjust the settings in the vars.yml file.
 
+## Basic Auth
+
+To secure the access to the web interface you can enable basic auth in vars.yml.
+
+Set `use_basic_auth` to true to enable it. User and password can be entered below the option.
+
 ## Vagrant
 
 The included Vagrantfile allows for quick installation on a local VM.
