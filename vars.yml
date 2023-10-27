@@ -5,7 +5,7 @@ ssl:
   CertKey: /etc/ssl/private/Private.key
   ChainFile: /etc/ssl/certs/Intermediate.crt
 
-use_basic_auth: true
+use_basic_auth: false
 
 basic_auth:
   user: user
