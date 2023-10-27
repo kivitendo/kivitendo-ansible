@@ -5,5 +5,8 @@
 #
 # aditional information for ssh connection (e.g. port, user, key file) can be entered like this
 # three.example.com:2222 ansible_user=myuser ansible_ssh_private_key_file=/path/to/key/file 
+#
+# for local install uncomment following line
+# localhost ansible_connection=local
 
 #vim: set ft=ini

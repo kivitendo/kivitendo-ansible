@@ -17,7 +17,7 @@ git clone https://github.com/kivitendo/kivitendo-ansible.git
 cd kivitendo-ansible
 ```
 
-To run the playbook simply enter the IP of your machine into the inventory file.
+To run the playbook simply enter the IP of your machine into the inventory file (see comments for examples).
 
 Then run the following command:
 ```
