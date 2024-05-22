@@ -89,6 +89,8 @@
           - postgresql-contrib
           - python3-passlib
           - texlive-full
+          - libmail-imapclient-perl
+          - libencode-imaputf7-perl
         state: present
         update_cache: true
           
@@ -102,7 +104,7 @@
       ansible.builtin.git:
         repo: 'https://github.com/kivitendo/kivitendo-erp.git'
         dest: /var/www/kivitendo-erp
-        version: release-3.8.0
+        version: release-3.9.0
 
     - name: Copy over Kivitendo.conf.
       ansible.builtin.copy:
@@ -135,7 +137,7 @@
         databases: all
         address: 127.0.0.1
         method: trust
-        dest: /etc/postgresql/14/main/pg_hba.conf
+        dest: /etc/postgresql/15/main/pg_hba.conf
 
   # apache server for kivi
     - name: Activate apache fastcgi and headers modules.
