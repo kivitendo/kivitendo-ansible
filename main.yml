@@ -91,6 +91,7 @@
           - texlive-full
           - libmail-imapclient-perl
           - libencode-imaputf7-perl
+          - libuuid-tiny-perl
         state: present
         update_cache: true
           
