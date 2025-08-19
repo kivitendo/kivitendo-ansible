@@ -17,7 +17,7 @@
         name: apache2
         state: restarted
 
-    - name: Start postgresql
+    - name: Restart postgresql
       ansible.builtin.service:
         name: postgresql
         state: restarted
@@ -88,10 +88,20 @@
           - postgresql
           - postgresql-contrib
           - python3-passlib
-          - texlive-full
+          #- texlive-full
           - libmail-imapclient-perl
           - libencode-imaputf7-perl
           - libuuid-tiny-perl
+
+          - latexmk
+          - texlive-binaries
+          - texlive-fonts-recommended
+          - texlive-lang-german
+          - texlive-lang-greek
+          - texlive-latex-extra
+          - texlive-latex-recommended
+          - texlive-luatex
+
         state: present
         update_cache: true
           
@@ -105,7 +115,7 @@
       ansible.builtin.git:
         repo: 'https://github.com/kivitendo/kivitendo-erp.git'
         dest: /var/www/kivitendo-erp
-        version: release-3.9.0
+        version: release-3.9.2
 
     - name: Copy over Kivitendo.conf.
       ansible.builtin.copy:
@@ -122,23 +132,36 @@
 
     - name: Change permissions.
       ansible.builtin.file:
-        owner: www-data
-        path: "/var/www/kivitendo-erp/{{ item }}"
-        mode: "0775"
+        owner:   www-data
+        path:    "/var/www/kivitendo-erp/{{ item }}"
+        mode:    'u=Xrw,g=Xrw,o=Xr'
+        recurse: true
       loop:
         - users
         - spool
+        - templates
         - webdav
 
   #  postrgesql for kivi
-    - name: Allow acces from localhost to Postgresql.
+    - name: Remove existing rules to ensure correct ordering of the rules
       ansible.builtin.postgresql_pg_hba:
-        contype: host
-        users: all
+        dest:      /etc/postgresql/17/main/pg_hba.conf
+        overwrite: true
+        contype:   local
+        users:     all
         databases: all
-        address: 127.0.0.1
-        method: trust
-        dest: /etc/postgresql/15/main/pg_hba.conf
+        method:    peer
+
+    - name: Allow access from localhost to Postgresql.
+      ansible.builtin.postgresql_pg_hba:
+        dest:      /etc/postgresql/17/main/pg_hba.conf
+        contype:   host
+        users:     postgres
+        databases: all
+        address:   127.0.0.1/32
+        method:    trust
+      notify: Restart postgresql
+
 
   # apache server for kivi
     - name: Activate apache fastcgi and headers modules.
@@ -167,7 +190,7 @@
         path: /etc/apache2/.htpasswd
         name: "{{ basic_auth.user }}"
         password: "{{ basic_auth.password }}"
-      when: basic_auth
+      when: use_basic_auth
 
     - name: Copy over apache config files.
       ansible.builtin.template:
