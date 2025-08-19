@@ -121,20 +121,21 @@
       ansible.builtin.copy:
         src: config-files/kivitendo.conf
         dest: /var/www/kivitendo-erp/config/kivitendo.conf
-        mode: "0664"
+        owner: www-data
+        mode: 'u=rw,g=rw,o='
       notify: Restart apache
 
     - name: Make webdav directory.
       ansible.builtin.file:
         path: /var/www/kivitendo-erp/webdav
         state: directory
-        mode: "0775"
+        mode:  'u=Xrw,g=Xrw,o='
 
     - name: Change permissions.
       ansible.builtin.file:
         owner:   www-data
         path:    "/var/www/kivitendo-erp/{{ item }}"
-        mode:    'u=Xrw,g=Xrw,o=Xr'
+        mode:    'u=Xrw,g=Xrw,o='
         recurse: true
       loop:
         - users
