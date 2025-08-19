@@ -113,9 +113,9 @@
 
     - name: Clone repo.
       ansible.builtin.git:
-        repo: 'https://github.com/kivitendo/kivitendo-erp.git'
-        dest: /var/www/kivitendo-erp
-        version: release-3.9.2
+        dest:    /var/www/kivitendo-erp
+        repo:    "{{ customer.repo | default('https://github.com/kivitendo/kivitendo-erp.git') }}"
+        version: "{{ customer.version | default('release-3.9.2') }}"
 
     - name: Copy over Kivitendo.conf.
       ansible.builtin.copy:
