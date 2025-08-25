@@ -88,6 +88,7 @@
           - postgresql
           - postgresql-contrib
           - python3-passlib
+          - ssl-cert
           #- texlive-full
           - libmail-imapclient-perl
           - libencode-imaputf7-perl
