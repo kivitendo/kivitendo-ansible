@@ -2,6 +2,7 @@
 - name: Install Kivi dependencies
   hosts: all
   become: true
+  gather_facts: false
 
   vars_files:
     vars.yml
@@ -10,7 +11,7 @@
     - name: Enable SSL
       ansible.builtin.command: a2ensite default-ssl
       notify: Restart apache
-      when: install_SSL
+      when: customer.installssl
 
     - name: Restart apache
       ansible.builtin.service:
@@ -23,6 +24,13 @@
         state: restarted
 
   tasks:
+
+    - name: Install Python on Debian-based Distros
+      ansible.builtin.raw: bash -c '(which python3 && echo "Present") || (apt-get -y install python3 && echo "Installed") || echo "Failed"'
+      register: python_install_output
+      changed_when: python_install_output.stdout_lines[-1] == 'Installed'
+      failed_when: python_install_output.stdout_lines[-1] not in ['Installed', 'Present']
+
 
     - name: Update repos and install dependencies.
       ansible.builtin.apt:
@@ -132,6 +140,13 @@
         state: directory
         mode:  'u=Xrw,g=Xrw,o='
 
+
+    - name: Make kivi_documents directory.
+      ansible.builtin.file:
+        path: /var/www/kivitendo-erp/kivi_documents
+        state: directory
+        mode:  'u=Xrw,g=Xrw,o='
+
     - name: Change permissions.
       ansible.builtin.file:
         owner:   www-data
@@ -139,6 +154,7 @@
         mode:    'u=Xrw,g=Xrw,o='
         recurse: true
       loop:
+        - kivi_documents
         - users
         - spool
         - templates
@@ -174,7 +190,7 @@
         - fcgid
         - headers
       notify: Restart apache
-      when: not install_SSL
+      when: not customer.installssl
 
     - name: Activate apache fastcgi, headers and ssl modules.
       community.general.apache2_module:
@@ -184,8 +200,10 @@
         - fcgid
         - headers
         - ssl
+        - rewrite
+        - socache_shmcb
       notify: Enable SSL
-      when: install_SSL
+      when: customer.installssl
 
     - name: Add a user to a password file suitable for use by libpam-pwdfile
       community.general.htpasswd:
@@ -200,7 +218,7 @@
         dest: /etc/apache2/sites-available/000-default.conf
         mode: '640'
       notify: Restart apache
-      when: not install_SSL
+      when: not customer.installssl
 
     - name: Copy over apache config files.
       ansible.builtin.template:
@@ -210,10 +228,10 @@
       loop:
         - default-ssl.conf
       notify: Restart apache
-      when: install_SSL
+      when: customer.installssl
     
     - name: Disable 000-default.conf
       shell: a2dissite 000-default.conf
-      when: install_SSL 
+      when: customer.installssl
 
 # vim: set ft=yaml.ansible
