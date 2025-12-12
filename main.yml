@@ -110,6 +110,7 @@
           - texlive-latex-extra
           - texlive-latex-recommended
           - texlive-luatex
+          - texlive-plain-generic
 
         state: present
         update_cache: true
