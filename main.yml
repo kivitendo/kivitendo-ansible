@@ -23,6 +23,10 @@
         name: postgresql
         state: restarted
 
+    - name: systemd_daemon_reload
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
   tasks:
 
     - name: Install Python on Debian-based Distros
@@ -234,5 +238,21 @@
     - name: Disable 000-default.conf
       shell: a2dissite 000-default.conf
       when: customer.installssl
+
+    - name: Install kivitendo-task-server
+      when: kivi_backup
+      ansible.builtin.copy:
+        src: config-files/kivitendo-task-server.service
+        dest: /etc/systemd/system/kivitendo-task-server.service
+        owner: root
+        mode: 'u=rw,g=rw,o='
+      notify: systemd_daemon_reload
+
+    - name: Start kivitendo-task-server
+      when: kivi_backup
+      ansible.builtin.systemd:
+        name: kivitendo-task-server
+        state: started
+        enabled: true
 
 # vim: set ft=yaml.ansible
