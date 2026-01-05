@@ -44,6 +44,7 @@
           - libalgorithm-checkdigits-perl
           - libapache2-mod-fcgid
           - libarchive-zip-perl
+          - libauthen-sasl-perl
           - libcam-pdf-perl
           - libcgi-pm-perl
           - libclone-perl
