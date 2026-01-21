@@ -50,6 +50,7 @@
           - libclone-perl
           - libconfig-std-perl
           - libcrypt-pbkdf2-perl
+          - libcryptx-perl
           - libdaemon-generic-perl
           - libdatetime-event-cron-perl
           - libdatetime-perl
