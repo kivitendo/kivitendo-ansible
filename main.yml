@@ -40,6 +40,7 @@
       ansible.builtin.apt:
         name:
           - apache2
+          - ghostscript
           - git
           - libalgorithm-checkdigits-perl
           - libapache2-mod-fcgid
