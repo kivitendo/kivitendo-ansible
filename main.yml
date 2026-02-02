@@ -242,7 +242,6 @@
       when: customer.installssl
 
     - name: Install kivitendo-task-server
-      when: kivi_backup
       ansible.builtin.copy:
         src: config-files/kivitendo-task-server.service
         dest: /etc/systemd/system/kivitendo-task-server.service
@@ -251,7 +250,6 @@
       notify: systemd_daemon_reload
 
     - name: Start kivitendo-task-server
-      when: kivi_backup
       ansible.builtin.systemd:
         name: kivitendo-task-server
         state: started
