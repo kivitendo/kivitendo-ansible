@@ -39,7 +39,7 @@ The playbook fails closed and refuses to continue when required security prerequ
 
 No playbook can prove the absence of every possible vulnerability. This repository therefore combines fail-closed configuration, least privilege and post-install verification rather than claiming absolute security.
 
-## Quick start from a minimal Debian 13 installation
+## Prerequisites and controller bootstrap
 
 A minimal Debian system may not contain Git yet. Install only the two packages required to obtain the repository:
 
@@ -134,6 +134,36 @@ ansible-vault encrypt secrets.yml
 `secrets.yml`, `vault-password.txt` and files ending in `.vault-password` are excluded by `.gitignore`. Do not commit real credentials, master keys, vault password files or private keys.
 
 The manually editable `secrets.example.yml` remains available as a reference, but automatic cryptographic generation is preferred for new deployments.
+
+## Quick start
+
+For a new minimal Debian 13 installation, the complete deployment sequence is:
+
+```bash
+apt-get update
+apt-get install -y --no-install-recommends ca-certificates git
+
+git clone https://github.com/DanielDietz-de/kivitendo-ansible.git
+cd kivitendo-ansible
+
+bash scripts/bootstrap-debian-controller.sh
+source .venv/bin/activate
+
+bash scripts/generate-secrets.sh --encrypt-with-ansible-vault
+```
+
+Then configure `inventory` for the target system and run the playbook:
+
+```bash
+ansible-playbook \
+  -i inventory \
+  --ask-become-pass \
+  --ask-vault-pass \
+  -e @secrets.yml \
+  main.yml
+```
+
+For a local deployment while already running as root, `--ask-become-pass` is normally unnecessary.
 
 ## Inventory
 
