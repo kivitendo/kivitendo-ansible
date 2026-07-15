@@ -23,11 +23,14 @@ def main() -> None:
         yaml.safe_load(path.read_text(encoding="utf-8"))
 
     jinja = Environment()
-    for relative in (
+    jinja_templates = (
         "config-files/apache/no-ssl/000-default.conf",
         "config-files/apache/ssl/default-ssl.conf",
+        "config-files/nginx/kivitendo.conf",
+        "config-files/nginx/kivitendo-fcgi.service",
         "config-files/kivitendo-task-server.service",
-    ):
+    )
+    for relative in jinja_templates:
         jinja.parse(read(relative))
 
     variables = yaml.safe_load(read("vars.yml"))
@@ -38,6 +41,8 @@ def main() -> None:
     powershell_generator = read("scripts/New-KivitendoSecrets.ps1")
     http = read("config-files/apache/no-ssl/000-default.conf")
     https = read("config-files/apache/ssl/default-ssl.conf")
+    nginx = read("config-files/nginx/kivitendo.conf")
+    nginx_fcgi_service = read("config-files/nginx/kivitendo-fcgi.service")
 
     required_upstream_paths = (
         "README.md",
@@ -51,9 +56,14 @@ def main() -> None:
         "config-files/kivitendo-task-server.service",
     )
 
-    for relative in required_upstream_paths:
+    required_nginx_paths = (
+        "config-files/nginx/kivitendo.conf",
+        "config-files/nginx/kivitendo-fcgi.service",
+    )
+
+    for relative in required_upstream_paths + required_nginx_paths:
         if not (ROOT / relative).exists():
-            raise AssertionError(f"Required upstream path was removed or renamed: {relative}")
+            raise AssertionError(f"Required path was removed, renamed, or not created: {relative}")
 
     required_original_variables = {
         "install_SSL",
@@ -90,6 +100,9 @@ def main() -> None:
         "Vagrant removed": not (ROOT / "Vagrantfile").exists(),
         "Original TLS variable name preserved": "install_SSL" in variables,
         "SSL disabled by default": variables["install_SSL"] is False,
+        "Apache remains default webserver": variables.get("webserver") == "apache",
+        "Nginx Unix socket is local runtime path": variables.get("kivitendo_fastcgi_socket")
+        == "/run/kivitendo/dispatcher.sock",
         "Original SSL key names preserved": required_ssl_keys <= set(variables["ssl"]),
         "Original Basic Auth structure preserved": required_basic_auth_keys
         <= set(variables["basic_auth"]),
@@ -100,6 +113,10 @@ def main() -> None:
         ),
         "Original task-server switch preserved": "kivi_backup | bool" in playbook,
         "No fork-only TLS replacement variable": "kivitendo_tls_enabled" not in variables,
+        "Webserver choices validated fail closed": (
+            "webserver in ['apache', 'nginx']" in playbook
+            and "Unsupported webserver" in playbook
+        ),
         "Debian bootstrap rejects unsupported OS before mutation": (
             '[[ "${ID:-}" == "debian" ]]' in bootstrap
             and '[[ "${DEBIAN_MAJOR_VERSION}" == "13" ]]' in bootstrap
@@ -141,6 +158,21 @@ def main() -> None:
             "ansible.builtin.shell:" not in playbook
             and re.search(r"^\s*shell\s*:", playbook, re.MULTILINE) is None
         ),
+        "TLS files verified on target before configuration": (
+            "tls_certificate_file.stat.exists" in playbook
+            and "tls_private_key_file.stat.exists" in playbook
+            and "tls_chain_file.stat.exists" in playbook
+        ),
+        "Apache packages are selected conditionally": (
+            "['apache2', 'libapache2-mod-fcgid'] if webserver == 'apache'" in playbook
+        ),
+        "Nginx packages are selected conditionally": "['nginx', 'spawn-fcgi']" in playbook,
+        "Apache tasks are webserver-gated": playbook.count("webserver == 'apache'") >= 10,
+        "Nginx tasks are webserver-gated": playbook.count("webserver == 'nginx'") >= 12,
+        "Inactive webserver is stopped": (
+            "Stop inactive Apache service when nginx is selected" in playbook
+            and "Stop inactive nginx service when Apache is selected" in playbook
+        ),
         "Public-only HTTP document root": (
             "{{ kivitendo_install_dir }}/public" in http
             and "{{ kivitendo_install_dir }}/fcgi/dispatcher.fcgi" in http
@@ -149,12 +181,47 @@ def main() -> None:
             "{{ kivitendo_install_dir }}/public" in https
             and "{{ kivitendo_install_dir }}/fcgi/dispatcher.fcgi" in https
         ),
+        "Nginx serves only the public document root": (
+            "root {{ kivitendo_install_dir }}/public;" in nginx
+            and "root {{ kivitendo_install_dir }};" not in nginx
+        ),
+        "Nginx routes kivitendo application requests through FastCGI": (
+            r"location ~ ^/[^/]+\.pl$" in nginx
+            and "fastcgi_pass unix:{{ kivitendo_fastcgi_socket }};" in nginx
+            and "fastcgi_param SCRIPT_FILENAME {{ kivitendo_install_dir }}/fcgi/dispatcher.fcgi;"
+            in nginx
+        ),
+        "Nginx reuses existing TLS interface": (
+            "install_SSL | bool" in nginx
+            and "effective_ssl_key_file" in nginx
+            and "/etc/nginx/kivitendo-fullchain.pem" in nginx
+        ),
+        "Nginx reuses existing Basic Auth interface": (
+            "use_basic_auth | bool" in nginx
+            and "auth_basic_user_file /etc/nginx/.htpasswd;" in nginx
+        ),
+        "FastCGI worker is systemd-managed over Unix socket": (
+            "User={{ kivitendo_web_user }}" in nginx_fcgi_service
+            and "RuntimeDirectory=kivitendo" in nginx_fcgi_service
+            and "spawn-fcgi -n -s {{ kivitendo_fastcgi_socket }} -M 0660" in nginx_fcgi_service
+            and "WorkingDirectory={{ kivitendo_install_dir }}/fcgi" in nginx_fcgi_service
+        ),
+        "Nginx configuration validated before service start": (
+            playbook.index("Validate nginx configuration")
+            < playbook.index("Ensure nginx is enabled and running")
+        ),
         "README documents compatibility intent": (
             "preserves the original upstream repository" in readme
             and "layout and public variable names" in readme
             and "install_SSL" in readme
             and "customer.repo" in readme
             and "kivi_backup" in readme
+        ),
+        "README documents Apache default and optional nginx": (
+            "Apache remains the default" in readme
+            and "webserver: nginx" in readme
+            and "kivitendo-fcgi.service" in readme
+            and "/run/kivitendo/dispatcher.sock" in readme
         ),
     }
 
