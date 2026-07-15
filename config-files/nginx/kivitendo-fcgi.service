@@ -1,0 +1,29 @@
+[Unit]
+Description=kivitendo FastCGI application worker
+Requires=postgresql.service
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ kivitendo_web_user }}
+Group={{ kivitendo_web_group }}
+WorkingDirectory={{ kivitendo_install_dir }}/fcgi
+RuntimeDirectory=kivitendo
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/test -x {{ kivitendo_install_dir }}/fcgi/dispatcher.fcgi
+ExecStart=/usr/bin/spawn-fcgi -n -s {{ kivitendo_fastcgi_socket }} -M 0660 -- {{ kivitendo_install_dir }}/fcgi/dispatcher.fcgi
+Restart=on-failure
+RestartSec=5s
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -101,6 +101,74 @@ jobs:
         shell: bash
         run: .venv/bin/python tests/validate_upstream_compat.py
 
+      - name: Validate rendered nginx HTTP and TLS configurations
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends nginx openssl
+
+          test_root="$(mktemp -d)"
+          trap 'rm -rf -- "${test_root}"' EXIT
+          mkdir -p "${test_root}/logs"
+          cp /etc/nginx/fastcgi_params "${test_root}/fastcgi_params"
+
+          .venv/bin/python - "${test_root}" <<'PYTHON'
+          import sys
+          from pathlib import Path
+
+          from jinja2 import Environment, StrictUndefined
+
+          output_dir = Path(sys.argv[1])
+          source = Path("config-files/nginx/kivitendo.conf").read_text(encoding="utf-8")
+          environment = Environment(undefined=StrictUndefined)
+          environment.filters["bool"] = bool
+          template = environment.from_string(source)
+
+          common = {
+              "kivitendo_server_name": "_",
+              "kivitendo_install_dir": "/var/www/kivitendo-erp",
+              "kivitendo_max_request_bytes": 104857600,
+              "kivitendo_fastcgi_socket": "/run/kivitendo/dispatcher.sock",
+              "kivitendo_fcgid_io_timeout": 600,
+              "kivitendo_hsts_enabled": True,
+              "use_basic_auth": False,
+              "effective_ssl_key_file": str(output_dir / "key.pem"),
+          }
+
+          for mode, ssl_enabled in (("http", False), ("tls", True)):
+              rendered = template.render(**common, install_SSL=ssl_enabled)
+              rendered = rendered.replace(
+                  "/etc/nginx/kivitendo-fullchain.pem",
+                  str(output_dir / "cert.pem"),
+              )
+              rendered = rendered.replace(
+                  "/etc/nginx/fastcgi_params",
+                  str(output_dir / "fastcgi_params"),
+              )
+              (output_dir / f"site-{mode}.conf").write_text(rendered, encoding="utf-8")
+          PYTHON
+
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=localhost' \
+            -keyout "${test_root}/key.pem" \
+            -out "${test_root}/cert.pem" >/dev/null 2>&1
+
+          for mode in http tls; do
+            cp "${test_root}/site-${mode}.conf" "${test_root}/site.conf"
+            cat > "${test_root}/nginx.conf" <<EOF_NGINX
+          error_log ${test_root}/logs/error.log;
+          pid ${test_root}/nginx.pid;
+          events {}
+          http {
+            include /etc/nginx/mime.types;
+            include ${test_root}/site.conf;
+          }
+          EOF_NGINX
+            nginx -t -p "${test_root}" -c nginx.conf
+          done
+
       - name: Validate Ansible syntax
         shell: bash
         run: .venv/bin/ansible-playbook --syntax-check -i inventory main.yml

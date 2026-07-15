@@ -141,9 +141,10 @@ ansible-playbook \
   main.yml
 ```
 
-By default, this installs kivitendo **without SSL encryption**. To enable SSL, place
-the required certificate files on the target system first and configure their paths
-in `vars.yml` before running the playbook.
+By default, this installs kivitendo with **Apache** and **without SSL encryption**.
+To use nginx instead, set `webserver: nginx` in `vars.yml` before running the playbook.
+To enable SSL, place the required certificate files on the target system first and
+configure their paths in `vars.yml` before running the playbook.
 
 After the playbook has finished, create the authentication database, client
 database, and initial application user through the kivitendo administration
@@ -173,6 +174,38 @@ repository and pinned version.
 The default source is the upstream kivitendo repository, pinned to a specific commit
 to avoid deployment drift.
 
+## Webserver selection
+
+Apache remains the default to preserve the original upstream behavior:
+
+```yaml
+webserver: apache
+```
+
+To deploy kivitendo with nginx instead:
+
+```yaml
+webserver: nginx
+```
+
+The nginx deployment uses the same kivitendo source tree and configuration as the
+Apache deployment. The playbook installs nginx and `spawn-fcgi`, creates a hardened
+systemd service named `kivitendo-fcgi.service`, and connects nginx to the application
+through the local Unix socket `/run/kivitendo/dispatcher.sock`.
+
+The nginx frontend:
+
+- serves static files only from `{{ kivitendo_install_dir }}/public`;
+- forwards top-level `.pl` application requests to `fcgi/dispatcher.fcgi`;
+- supports the existing `install_SSL`, `ssl.*`, `use_basic_auth`, and `basic_auth`
+  settings;
+- validates the nginx configuration with `nginx -t` before the service is restarted;
+- stops the inactive Apache or nginx service when switching webservers to avoid port
+  conflicts, but does not purge the inactive packages.
+
+The default remains Apache. No existing upstream variable is renamed or removed by
+adding nginx support.
+
 ## SSL
 
 By default, the playbook installs kivitendo **without SSL encryption**:
@@ -194,11 +227,16 @@ ssl:
   ChainFile: /etc/ssl/certs/example.chain.pem
 ```
 
-The existing upstream variable names remain authoritative. When SSL is enabled, the
-playbook validates the configured certificate and key settings and fails closed if
-the required prerequisites are not satisfied. The Debian test certificate is
-rejected unless `allow_test_certificate: true` is explicitly set for an isolated
-test system.
+The existing upstream variable names remain authoritative for both Apache and nginx.
+When SSL is enabled, the playbook verifies that the configured certificate, private
+key, and optional chain file actually exist on the target before it changes the
+webserver configuration. The Debian test certificate is rejected unless
+`allow_test_certificate: true` is explicitly set for an isolated test system.
+
+For nginx, the playbook builds `/etc/nginx/kivitendo-fullchain.pem` from `CertFile`
+and, when configured, `ChainFile`. The private key remains at the path specified by
+`CertKey`. If `CertFile` already contains the complete certificate chain, set
+`ChainFile` to an empty string to avoid duplicating the chain.
 
 ## Basic Auth
 
