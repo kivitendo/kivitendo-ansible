@@ -64,6 +64,7 @@ cat <<EOF
 Next steps:
   cd '${REPOSITORY_ROOT}'
   source .venv/bin/activate
+  bash scripts/generate-secrets.sh --encrypt-with-ansible-vault
   ansible-playbook -i inventory --ask-become-pass --ask-vault-pass -e @secrets.yml main.yml
 
 For a local installation while already running as root, --ask-become-pass is normally unnecessary.

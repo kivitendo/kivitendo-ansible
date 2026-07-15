@@ -71,37 +71,61 @@ For a controller that is not the kivitendo target, run the bootstrap on the cont
 
 ## Secure secret generation
 
-The repository includes `scripts/New-KivitendoSecrets.ps1`. It generates all required application secrets with .NET's cryptographic random-number generator and uses rejection sampling to avoid modulo bias. It does not print generated secret values to the console.
+### Debian: native Bash workflow
 
-From PowerShell:
+The preferred Debian workflow is `scripts/generate-secrets.sh`. It requires only Bash, standard Debian utilities and Python 3, which is already installed by `scripts/bootstrap-debian-controller.sh`. PowerShell is **not required** on Debian.
 
-```powershell
-pwsh ./scripts/New-KivitendoSecrets.ps1
+Generate the required secrets with:
+
+```bash
+bash scripts/generate-secrets.sh
 ```
 
-By default, this creates `secrets.yml` containing:
+The script uses Python's standard-library `secrets` module backed by the operating-system cryptographic random-number generator. Secret values are written directly to a protected temporary file and are never printed to stdout.
+
+By default, it creates `secrets.yml` containing:
 
 - `kivitendo_admin_password` with 32 random characters;
 - `kivitendo_db_password` with 40 random characters;
 - `kivitendo_master_key` with 64 random characters.
 
-The generated values exceed the playbook's required minimum lengths of 20, 24 and 32 characters respectively. On Windows, the script replaces inherited ACLs and grants access only to the current user. On Unix-like systems running PowerShell, it applies mode `0600`. Existing output files are not overwritten unless `-Force` is supplied.
+The generated values exceed the playbook's required minimum lengths of 20, 24 and 32 characters respectively. The output file is created atomically with mode `0600`. Existing output files are not overwritten unless `--force` is supplied.
 
 To include credentials for optional HTTP Basic Authentication:
 
-```powershell
-pwsh ./scripts/New-KivitendoSecrets.ps1 \
-  -IncludeBasicAuth \
-  -BasicAuthUser "example"
+```bash
+bash scripts/generate-secrets.sh \
+  --include-basic-auth \
+  --basic-auth-user "example"
 ```
 
-To encrypt immediately when `ansible-vault` is available in the current PowerShell environment:
+To encrypt the generated file with Ansible Vault before it is published at the final output path:
 
-```powershell
-pwsh ./scripts/New-KivitendoSecrets.ps1 -EncryptWithAnsibleVault
+```bash
+bash scripts/generate-secrets.sh --encrypt-with-ansible-vault
 ```
 
-Without `-EncryptWithAnsibleVault`, encrypt the generated file before long-term storage:
+A separate vault password file can be supplied explicitly:
+
+```bash
+bash scripts/generate-secrets.sh \
+  --encrypt-with-ansible-vault \
+  --vault-password-file /secure/path/vault-password.txt
+```
+
+If Ansible Vault encryption fails, the script removes its temporary plaintext file and does not publish a new output file.
+
+### Windows: optional PowerShell helper
+
+For administrators generating secrets from Windows, `scripts/New-KivitendoSecrets.ps1` remains available as an optional convenience helper. It uses .NET's cryptographic random-number generator, applies restrictive Windows ACLs, refuses unintended overwrites, supports optional Basic Authentication credentials and can invoke Ansible Vault directly.
+
+```powershell
+pwsh ./scripts/New-KivitendoSecrets.ps1
+```
+
+Both generators use the same default secret lengths and produce the same Ansible variable structure. The Bash generator is the canonical path for Debian deployments.
+
+Without immediate Vault encryption, encrypt the generated file before long-term storage:
 
 ```bash
 ansible-vault encrypt secrets.yml
@@ -109,7 +133,7 @@ ansible-vault encrypt secrets.yml
 
 `secrets.yml`, `vault-password.txt` and files ending in `.vault-password` are excluded by `.gitignore`. Do not commit real credentials, master keys, vault password files or private keys.
 
-The manually editable `secrets.example.yml` remains available as a reference, but the PowerShell generator is the preferred path for new deployments.
+The manually editable `secrets.example.yml` remains available as a reference, but automatic cryptographic generation is preferred for new deployments.
 
 ## Inventory
 
@@ -192,7 +216,7 @@ Additional HTTP Basic Authentication is disabled by default and can only be enab
 use_basic_auth: true
 ```
 
-Store the corresponding `basic_auth.user` and `basic_auth.password` values in the encrypted `secrets.yml` file. The PowerShell generator can create them with `-IncludeBasicAuth`.
+Store the corresponding `basic_auth.user` and `basic_auth.password` values in the encrypted `secrets.yml` file. The Bash generator creates them with `--include-basic-auth`; the optional PowerShell helper uses `-IncludeBasicAuth`.
 
 The Basic Authentication password must contain at least 16 characters.
 
