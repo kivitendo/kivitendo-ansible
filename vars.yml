@@ -1,5 +1,7 @@
 ---
 # Existing upstream interface: keep these names stable for downstream users.
+# SSL is intentionally disabled by default. To enable it, set install_SSL to true
+# and configure certificate paths below before running the playbook.
 install_SSL: false
 ssl:
   CertFile: /etc/ssl/certs/SSLCert.crt
