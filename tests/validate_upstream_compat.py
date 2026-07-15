@@ -89,6 +89,7 @@ def main() -> None:
         ),
         "Vagrant removed": not (ROOT / "Vagrantfile").exists(),
         "Original TLS variable name preserved": "install_SSL" in variables,
+        "SSL disabled by default": variables["install_SSL"] is False,
         "Original SSL key names preserved": required_ssl_keys <= set(variables["ssl"]),
         "Original Basic Auth structure preserved": required_basic_auth_keys
         <= set(variables["basic_auth"]),
