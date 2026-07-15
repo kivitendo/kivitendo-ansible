@@ -37,6 +37,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           git init .
           git remote add origin "https://github.com/${REPOSITORY}.git"
           git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
