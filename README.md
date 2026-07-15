@@ -141,6 +141,10 @@ ansible-playbook \
   main.yml
 ```
 
+By default, this installs kivitendo **without SSL encryption**. To enable SSL, place
+the required certificate files on the target system first and configure their paths
+in `vars.yml` before running the playbook.
+
 After the playbook has finished, create the authentication database, client
 database, and initial application user through the kivitendo administration
 interface as required by kivitendo.
@@ -171,7 +175,16 @@ to avoid deployment drift.
 
 ## SSL
 
-The existing upstream variables remain authoritative:
+By default, the playbook installs kivitendo **without SSL encryption**:
+
+```yaml
+install_SSL: false
+```
+
+For SSL encryption to work, the required certificate files must already exist on
+the target system before the playbook is run. After placing the certificate, private
+key, and chain files on the target, enable SSL and adjust the existing settings in
+`vars.yml`:
 
 ```yaml
 install_SSL: true
@@ -181,12 +194,11 @@ ssl:
   ChainFile: /etc/ssl/certs/example.chain.pem
 ```
 
-`install_SSL` defaults to `false`, preserving the original upstream behavior. For
-production deployments, TLS is strongly recommended.
-
-When TLS is enabled, the playbook validates that certificate and key paths are
-configured. The Debian test certificate is rejected unless
-`allow_test_certificate: true` is explicitly set for an isolated test system.
+The existing upstream variable names remain authoritative. When SSL is enabled, the
+playbook validates the configured certificate and key settings and fails closed if
+the required prerequisites are not satisfied. The Debian test certificate is
+rejected unless `allow_test_certificate: true` is explicitly set for an isolated
+test system.
 
 ## Basic Auth
 
