@@ -149,7 +149,8 @@ def main() -> None:
             and "{{ kivitendo_install_dir }}/fcgi/dispatcher.fcgi" in https
         ),
         "README documents compatibility intent": (
-            "preserves the original upstream repository layout" in readme
+            "preserves the original upstream repository" in readme
+            and "layout and public variable names" in readme
             and "install_SSL" in readme
             and "customer.repo" in readme
             and "kivi_backup" in readme
