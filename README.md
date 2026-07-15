@@ -9,12 +9,12 @@ The playbook intentionally supports Debian 13 only. All operating-system assumpt
 As of 2026-07-15, this playbook uses the following baseline:
 
 - Debian 13 (Trixie)
-- kivitendo 4.0.0, pinned to the verified upstream release commit `1ca1785a12a054fbd07f7365fd39145694b44d61`
+- kivitendo latest upstream snapshot `4.0.1-unstable`, pinned to commit `b24246b3f1159de3c9def7b0b564641cd1dddd8c`
 - ansible-core 2.21.x, with the newest compatible patch release selected by `requirements.txt`
 - `community.general` 13.1.0
 - `community.postgresql` 4.2.0
 
-The exact kivitendo commit is pinned deliberately. The upstream `master` branch is not used because it currently identifies itself as `4.0.1-unstable` rather than a stable release.
+The exact kivitendo commit is pinned deliberately. At the validation date, the latest stable release is 4.0.0, but upstream has committed explicit XSS fixes after that release. To satisfy the requirement to use the latest security-relevant upstream code, this playbook pins the current `master` head instead. That snapshot identifies itself as `4.0.1-unstable`, so it is newer and contains those fixes but has a higher functional-regression risk than the stable 4.0.0 release.
 
 ## Security model
 
@@ -26,12 +26,13 @@ The playbook fails closed and refuses to continue when required security prerequ
 - creates a dedicated, non-superuser PostgreSQL role for kivitendo;
 - enforces SCRAM-SHA-256 for the kivitendo database role and rejects any remaining active `trust` rule in `pg_hba.conf`;
 - discovers the active PostgreSQL HBA file instead of hard-coding a PostgreSQL major-version path;
-- installs kivitendo from an immutable, verified upstream release commit;
-- derives the live `kivitendo.conf` from that pinned upstream release instead of tracking a configuration file with default credentials in Git;
+- installs kivitendo from an immutable, verified upstream commit;
+- derives the live `kivitendo.conf` from that pinned upstream snapshot instead of tracking a configuration file with default credentials in Git;
 - stores `kivitendo.conf` as `root:www-data` with mode `0640`;
 - keeps business documents outside the Apache document root by default;
-- denies direct web access to `.git`, `config`, `kivi_documents`, `users`, `spool` and hidden files;
+- exposes only kivitendo's dedicated `public/` directory plus the FastCGI dispatcher; source code, configuration, templates, tests, Git metadata and business documents remain outside the web root;
 - enables TLS by default and requires an explicit opt-in before unencrypted HTTP is allowed;
+- uses the current upstream-recommended 100 MiB FCGI request limit and reduces the previous 32000-second I/O timeout to the upstream-recommended 600 seconds;
 - validates the Apache configuration before starting Apache;
 - runs kivitendo's own dependency check after installation;
 - verifies the installed kivitendo release, Git commit, database authentication and sensitive-file permissions at the end of the play.
@@ -105,13 +106,15 @@ kivitendo_tls_enabled: true
 allow_insecure_http: false
 ```
 
-The default certificate paths point to Debian's `ssl-cert` snake-oil certificate so that an isolated test installation can start without embedding certificate material in Git. **Replace it with a trusted certificate before production use** by changing:
+The default certificate paths point to Debian's `ssl-cert` snake-oil certificate, but production runs **fail closed** unless you replace them with a real certificate. Configure:
 
 ```yaml
 ssl:
   cert_file: /etc/ssl/certs/example.fullchain.pem
   cert_key: /etc/ssl/private/example.key
 ```
+
+For an isolated test system only, the Debian test certificate can be explicitly allowed with `allow_test_certificate: true`. The Vagrant test helper does this automatically and disables HSTS for that local test VM.
 
 Unencrypted HTTP requires two explicit changes:
 
@@ -137,7 +140,9 @@ The password must contain at least 16 characters. Keep it in an encrypted variab
 
 ## Task server
 
-The kivitendo task server is enabled by default because kivitendo uses it for recurring invoices and other background jobs:
+The kivitendo task server is intentionally **disabled for the first installation run** because the authentication/client databases do not exist until they are initialized through the kivitendo administration interface. Starting it before that initialization can fail.
+
+After creating the authentication database, client database and initial application user, enable it and rerun the playbook:
 
 ```yaml
 kivitendo_task_server_enabled: true
@@ -156,7 +161,7 @@ export KIVITENDO_MASTER_KEY='replace-with-at-least-32-random-characters'
 vagrant up
 ```
 
-The forwarded test endpoint is available on host port `8080` only when the VM is deliberately configured for insecure HTTP. For realistic validation, use TLS and connect to the guest directly.
+The VM forwards guest port 80 to `127.0.0.1:8080` and guest port 443 to `127.0.0.1:8443`. TLS remains enabled by default.
 
 ## Important operational notes
 
@@ -165,4 +170,4 @@ The forwarded test endpoint is available on host port `8080` only when the VM is
 - Back up PostgreSQL databases, `/var/lib/kivitendo/documents`, the live kivitendo configuration and any additional business data.
 - Do not expose PostgreSQL directly to untrusted networks.
 - Replace the default test certificate before production use.
-- Review upstream kivitendo release notes before changing `kivitendo_version` to a different commit.
+- Review upstream kivitendo release notes and security fixes before changing `kivitendo_version` to a different commit. The current default is an unreleased upstream snapshot by design.
