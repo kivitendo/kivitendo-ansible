@@ -28,6 +28,7 @@
         set -eu
         . /etc/os-release
         test "${ID:-}" = "debian"
+        test "${VERSION_ID%%.*}" = "{{ supported_debian_major_version }}"
         if command -v python3 >/dev/null 2>&1; then
           echo PRESENT
         else
@@ -405,6 +406,7 @@
     - name: Check configured TLS certificate files
       ansible.builtin.stat:
         path: "{{ item }}"
+        follow: true
       loop:
         - "{{ ssl.cert_file }}"
         - "{{ ssl.cert_key }}"
@@ -417,9 +419,13 @@
           - tls_certificate_files.results | map(attribute='stat.exists') | min
           - tls_certificate_files.results[1].stat.pw_name == 'root'
           - tls_certificate_files.results[1].stat.mode in ['0400', '0440', '0600', '0640']
+          - >-
+            tls_certificate_files.results[1].stat.mode in ['0400', '0600'] or
+            tls_certificate_files.results[1].stat.gr_name in ssl.allowed_key_groups
         fail_msg: >-
           TLS certificate files must exist and the private key must be root-owned
-          with mode 0400, 0440, 0600 or 0640.
+          with mode 0400, 0440, 0600 or 0640. Group-readable private keys are
+          accepted only when the owning group is listed in ssl.allowed_key_groups.
       when: kivitendo_tls_enabled | bool
 
     - name: Render secure TLS Apache virtual host
