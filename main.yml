@@ -245,6 +245,24 @@
           The pinned commit does not contain the expected kivitendo release
           {{ kivitendo_release }}.
 
+    - name: Make application source readable but not writable by the web service
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}"
+        state: directory
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: 'u=rwX,g=rX,o='
+        recurse: true
+
+    - name: Restrict Git metadata to root
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}/.git"
+        state: directory
+        owner: root
+        group: root
+        mode: 'u=rwX,g=,o='
+        recurse: true
+
     - name: Seed live kivitendo configuration from the pinned upstream release
       ansible.builtin.copy:
         src: "{{ kivitendo_install_dir }}/config/kivitendo.conf.default"
@@ -536,4 +554,14 @@
         login_user: "{{ kivitendo_db_user }}"
         login_password: "{{ kivitendo_db_password }}"
         login_db: postgres
+      register: kivitendo_database_ping
+      no_log: true
+
+    - name: Require successful kivitendo database authentication
+      ansible.builtin.assert:
+        that:
+          - kivitendo_database_ping.is_available | bool
+        fail_msg: >-
+          The dedicated kivitendo PostgreSQL role could not authenticate through
+          the configured SCRAM-protected localhost connection.
       no_log: true
