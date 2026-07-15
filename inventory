@@ -1,12 +1,8 @@
-# Add the IP or domain of your target machine below e.g.
-# example.org
-# or
-# 192.168.121.1
+# Add one or more Debian 13 target hosts below, for example:
 #
-# aditional information for ssh connection (e.g. port, user, key file) can be entered like this
-# three.example.com:2222 ansible_user=myuser ansible_ssh_private_key_file=/path/to/key/file 
+# [kivitendo]
+# 192.0.2.10 ansible_user=admin ansible_ssh_private_key_file=~/.ssh/id_ed25519
 #
-# for local install uncomment following line
+# A non-standard SSH port can be set with ansible_port=2222.
+# For a local Debian 13 test install, use:
 # localhost ansible_connection=local
-
-#vim: set ft=ini
