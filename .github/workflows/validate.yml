@@ -15,7 +15,7 @@ jobs:
       image: debian:13
 
     steps:
-      - name: Install minimal validation prerequisites
+      - name: Install minimal checkout prerequisites
         shell: bash
         run: |
           set -euo pipefail
@@ -23,10 +23,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates \
-            git \
-            python3 \
-            python3-venv \
-            ruby
+            git
           rm -rf /var/lib/apt/lists/*
 
       - name: Check out exact workflow revision without third-party actions
@@ -45,13 +42,13 @@ jobs:
             fetch --depth=1 origin "${REVISION_REF}"
           git checkout --detach FETCH_HEAD
 
-      - name: Install pinned Ansible dependencies
+      - name: Validate bootstrap shell syntax
         shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv .venv
-          .venv/bin/pip install --disable-pip-version-check -r requirements.txt
-          .venv/bin/ansible-galaxy collection install -r requirements.yml
+        run: bash -n scripts/bootstrap-debian-controller.sh
+
+      - name: Bootstrap minimal Debian Ansible controller
+        shell: bash
+        run: bash scripts/bootstrap-debian-controller.sh
 
       - name: Run static security validation
         shell: bash
@@ -60,7 +57,3 @@ jobs:
       - name: Validate Ansible syntax
         shell: bash
         run: .venv/bin/ansible-playbook --syntax-check -i inventory main.yml
-
-      - name: Validate Vagrantfile Ruby syntax
-        shell: bash
-        run: ruby -c Vagrantfile
