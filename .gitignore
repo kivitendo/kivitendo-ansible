@@ -1,0 +1,5 @@
+.venv/
+.vagrant/
+__pycache__/
+*.retry
+secrets.yml
