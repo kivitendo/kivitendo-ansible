@@ -40,7 +40,8 @@ jobs:
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           git init .
           git remote add origin "https://github.com/${REPOSITORY}.git"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+          AUTH_HEADER="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w 0)"
+          git -c http.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" \
             fetch --depth=1 origin "${REVISION_REF}"
           git checkout --detach FETCH_HEAD
 
