@@ -21,6 +21,9 @@ Vagrant.configure("2") do |config|
     ansible.playbook = "main.yml"
     ansible.extra_vars = required_secrets.to_h { |environment_name, variable_name|
       [variable_name, ENV.fetch(environment_name)]
-    }
+    }.merge(
+      allow_test_certificate: true,
+      kivitendo_hsts_enabled: false
+    )
   end
 end
