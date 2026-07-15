@@ -1,12 +1,148 @@
 ---
-install_SSL: false
+# Supported target platform. Debian point releases remain compatible within Debian 13.
+supported_debian_major_version: "13"
+
+# Verified latest upstream kivitendo snapshot as of 2026-07-15.
+# This is the current master head and identifies itself as 4.0.1-unstable.
+# Pinning the exact commit prevents installation drift if the branch moves later.
+kivitendo_release: "4.0.1-unstable"
+kivitendo_version: "b24246b3f1159de3c9def7b0b564641cd1dddd8c"
+kivitendo_repo: "https://github.com/kivitendo/kivitendo-erp.git"
+kivitendo_install_dir: "/var/www/kivitendo-erp"
+kivitendo_document_dir: "/var/lib/kivitendo/documents"
+kivitendo_web_user: "www-data"
+kivitendo_web_group: "www-data"
+
+# PostgreSQL settings. The role receives LOGIN and CREATEDB only; it is not a
+# superuser and cannot create other roles.
+kivitendo_db_host: "127.0.0.1"
+kivitendo_db_port: "5432"
+kivitendo_db_name: "kivitendo_auth"
+kivitendo_db_user: "kivitendo"
+
+# Required secrets. Keep these empty in Git and supply them through Ansible Vault
+# or another protected variable source. See secrets.example.yml and README.md.
+kivitendo_admin_password: ""
+kivitendo_db_password: ""
+kivitendo_master_key: ""
+
+# Secure transport is enabled by default. Debian's ssl-cert package provides the
+# snake-oil certificate for initial testing; replace it with a trusted certificate
+# before production use.
+kivitendo_tls_enabled: true
+allow_insecure_http: false
+kivitendo_server_name: ""
+kivitendo_hsts_enabled: true
+allow_test_certificate: false
+kivitendo_max_request_bytes: 104857600
+kivitendo_fcgid_io_timeout: 600
 ssl:
-  CertFile: /etc/ssl/certs/SSLCert.crt
-  CertKey: /etc/ssl/private/Private.key
-  ChainFile: /etc/ssl/certs/Intermediate.crt
+  cert_file: "/etc/ssl/certs/ssl-cert-snakeoil.pem"
+  cert_key: "/etc/ssl/private/ssl-cert-snakeoil.key"
+  allowed_key_groups:
+    - root
+    - ssl-cert
 
+# Optional additional HTTP Basic Authentication. It is deliberately disabled by
+# default and may only be enabled together with TLS.
 use_basic_auth: false
-
 basic_auth:
-  user: user
-  password: changeme
+  user: ""
+  password: ""
+
+# The task server needs an initialized kivitendo authentication/client database.
+# Keep it disabled for the first installation run; enable it after completing
+# database initialization in the kivitendo administration interface and rerun the playbook.
+kivitendo_task_server_enabled: false
+
+# Debian packages required by the pinned kivitendo snapshot plus selected optional modules for
+# TLS-protected SMTP/IMAP use. The playbook installs the newest candidate versions
+# available from the target's configured Debian 13 repositories.
+kivitendo_packages:
+  - acl
+  - apache2
+  - ca-certificates
+  - git
+  - libapache2-mod-fcgid
+  - libalgorithm-checkdigits-perl
+  - libarchive-zip-perl
+  - libauthen-sasl-perl
+  - libcgi-pm-perl
+  - libclone-perl
+  - libconfig-std-perl
+  - libcryptx-perl
+  - libdaemon-generic-perl
+  - libdatetime-event-cron-perl
+  - libdatetime-format-strptime-perl
+  - libdatetime-perl
+  - libdatetime-set-perl
+  - libdbd-pg-perl
+  - libdbi-perl
+  - libdigest-sha-perl
+  - libemail-address-perl
+  - libemail-mime-perl
+  - libencode-imaputf7-perl
+  - libexception-class-perl
+  - libfcgi-perl
+  - libfile-copy-recursive-perl
+  - libfile-flock-perl
+  - libfile-mimeinfo-perl
+  - libfile-slurp-perl
+  - libgd-gd2-perl
+  - libhtml-parser-perl
+  - libhtml-restrict-perl
+  - libimage-info-perl
+  - libimager-perl
+  - libimager-qrcode-perl
+  - libio-socket-ssl-perl
+  - libipc-run-perl
+  - libjson-perl
+  - liblist-moreutils-perl
+  - liblist-utilsby-perl
+  - libmail-imapclient-perl
+  - libmath-round-perl
+  - libnet-smtp-ssl-perl
+  - libnet-sslglue-perl
+  - libparams-validate-perl
+  - libparent-perl
+  - libpbkdf2-tiny-perl
+  - libpdf-api2-perl
+  - libregexp-ipv6-perl
+  - librest-client-perl
+  - librose-db-object-perl
+  - librose-db-perl
+  - librose-object-perl
+  - libset-infinite-perl
+  - libsort-naturally-perl
+  - libstring-shellquote-perl
+  - libtemplate-perl
+  - libtext-csv-xs-perl
+  - libtext-iconv-perl
+  - libtext-unidecode-perl
+  - libtry-tiny-perl
+  - liburi-perl
+  - libuuid-tiny-perl
+  - libwww-perl
+  - libxml-libxml-perl
+  - libxml-writer-perl
+  - libyaml-libyaml-perl
+  - libyaml-perl
+  - poppler-utils
+  - postgresql
+  - postgresql-contrib
+  - python3
+  - python3-bcrypt
+  - python3-passlib
+  - python3-psycopg2
+  - ssl-cert
+
+kivitendo_latex_packages:
+  - latexmk
+  - texlive-binaries
+  - texlive-fonts-recommended
+  - texlive-lang-german
+  - texlive-lang-greek
+  - texlive-latex-extra
+  - texlive-latex-recommended
+  - texlive-luatex
+  - texlive-plain-generic

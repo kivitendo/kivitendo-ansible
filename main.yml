@@ -1,260 +1,590 @@
 ---
-- name: Install Kivi dependencies
+- name: Install and harden kivitendo on Debian 13
   hosts: all
   become: true
   gather_facts: false
 
   vars_files:
-    vars.yml
+    - vars.yml
 
   handlers:
-    - name: Enable SSL
-      ansible.builtin.command: a2ensite default-ssl
-      notify: Restart apache
-      when: customer.installssl
-
-    - name: Restart apache
+    - name: Restart Apache
       ansible.builtin.service:
         name: apache2
         state: restarted
 
-    - name: Restart postgresql
+    - name: Reload PostgreSQL
       ansible.builtin.service:
         name: postgresql
-        state: restarted
+        state: reloaded
 
-    - name: systemd_daemon_reload
+    - name: Reload systemd
       ansible.builtin.systemd_service:
         daemon_reload: true
 
+  pre_tasks:
+    - name: Verify target is Debian and bootstrap Python 3 when required
+      ansible.builtin.raw: |
+        set -eu
+        . /etc/os-release
+        test "${ID:-}" = "debian"
+        test "${VERSION_ID%%.*}" = "{{ supported_debian_major_version }}"
+        if command -v python3 >/dev/null 2>&1; then
+          echo PRESENT
+        else
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3
+          echo INSTALLED
+        fi
+      register: python_bootstrap
+      changed_when: "'INSTALLED' in python_bootstrap.stdout"
+
+    - name: Gather system facts
+      ansible.builtin.setup:
+
+    - name: Verify supported Ansible version
+      ansible.builtin.assert:
+        that:
+          - ansible_version.full is version('2.21.0', '>=')
+        fail_msg: >-
+          ansible-core 2.21 or newer is required. Install the controller
+          dependencies from requirements.txt and requirements.yml.
+
+    - name: Verify Debian 13 target
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Debian'
+          - ansible_facts.distribution_major_version == supported_debian_major_version
+        fail_msg: >-
+          This playbook intentionally supports Debian {{ supported_debian_major_version }} only.
+          Detected {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+
+    - name: Validate required secrets
+      ansible.builtin.assert:
+        that:
+          - kivitendo_admin_password | length >= 20
+          - kivitendo_db_password | length >= 24
+          - kivitendo_master_key | length >= 32
+          - "'\\n' not in kivitendo_admin_password and '\\r' not in kivitendo_admin_password"
+          - "'\\n' not in kivitendo_db_password and '\\r' not in kivitendo_db_password"
+          - "'\\n' not in kivitendo_master_key and '\\r' not in kivitendo_master_key"
+          - kivitendo_admin_password not in ['admin123', 'changeme', '<set-with-ansible-vault>']
+          - kivitendo_db_password not in ['admin123', 'changeme', '<set-with-ansible-vault>']
+          - kivitendo_master_key not in ['admin123', 'changeme', '<set-with-ansible-vault>']
+        fail_msg: >-
+          Strong kivitendo_admin_password, kivitendo_db_password and
+          kivitendo_master_key values are required. Keep them outside Git and
+          supply them with Ansible Vault or another protected variable source.
+      no_log: true
+
+    - name: Require explicit opt-in for unencrypted HTTP
+      ansible.builtin.assert:
+        that:
+          - kivitendo_tls_enabled | bool or allow_insecure_http | bool
+        fail_msg: >-
+          TLS is disabled, but allow_insecure_http is not explicitly true.
+          The playbook fails closed instead of silently deploying kivitendo over HTTP.
+
+    - name: Validate TLS certificate policy
+      ansible.builtin.assert:
+        that:
+          - ssl.cert_file | length > 0
+          - ssl.cert_key | length > 0
+          - >-
+            allow_test_certificate | bool or
+            ('snakeoil' not in ssl.cert_file and 'snakeoil' not in ssl.cert_key)
+        fail_msg: >-
+          TLS is enabled but no production certificate has been configured.
+          Replace the Debian snake-oil certificate paths, or set
+          allow_test_certificate=true explicitly for an isolated test system.
+      when: kivitendo_tls_enabled | bool
+
+    - name: Validate Basic Authentication settings
+      ansible.builtin.assert:
+        that:
+          - kivitendo_tls_enabled | bool
+          - basic_auth.user | length > 0
+          - basic_auth.password | length >= 16
+          - basic_auth.password not in ['changeme', 'password', '<set-with-ansible-vault>']
+        fail_msg: >-
+          HTTP Basic Authentication may only be enabled with TLS and requires
+          a non-empty user plus a password of at least 16 characters.
+      when: use_basic_auth | bool
+      no_log: true
+
   tasks:
-
-    - name: Install Python on Debian-based Distros
-      ansible.builtin.raw: bash -c '(which python3 && echo "Present") || (apt-get -y install python3 && echo "Installed") || echo "Failed"'
-      register: python_install_output
-      changed_when: python_install_output.stdout_lines[-1] == 'Installed'
-      failed_when: python_install_output.stdout_lines[-1] not in ['Installed', 'Present']
-
-
-    - name: Update repos and install dependencies.
+    - name: Install current Debian 13 package candidates without auto-starting services
       ansible.builtin.apt:
-        name:
-          - apache2
-          - git
-          - libalgorithm-checkdigits-perl
-          - libapache2-mod-fcgid
-          - libarchive-zip-perl
-          - libauthen-sasl-perl
-          - libcam-pdf-perl
-          - libcgi-pm-perl
-          - libclone-perl
-          - libconfig-std-perl
-          - libcrypt-pbkdf2-perl
-          - libcryptx-perl
-          - libdaemon-generic-perl
-          - libdatetime-event-cron-perl
-          - libdatetime-perl
-          - libdatetime-set-perl
-          - libdbd-pg-perl
-          - libdbi-perl
-          - libemail-address-perl
-          - libemail-mime-perl
-          - libexception-class-perl
-          - libfcgi-perl
-          - libfile-copy-recursive-perl
-          - libfile-flock-perl
-          - libfile-mimeinfo-perl
-          - libfile-slurp-perl
-          - libgd-gd2-perl
-          - libhtml-restrict-perl
-          - libimage-info-perl
-          - libimager-perl
-          - libimager-qrcode-perl
-          - libipc-run-perl
-          - libjson-perl
-          - liblist-moreutils-perl
-          - liblist-utilsby-perl
-          - libmath-round-perl
-          - libnet-smtp-ssl-perl
-          - libnet-sslglue-perl
-          - libparams-validate-perl
-          - libpbkdf2-tiny-perl
-          - libpdf-api2-perl
-          - libregexp-ipv6-perl
-          - librest-client-perl
-          - librose-db-object-perl
-          - librose-db-perl
-          - librose-object-perl
-          - libset-infinite-perl
-          - libsort-naturally-perl
-          - libstring-shellquote-perl
-          - libtemplate-perl
-          - libtext-csv-xs-perl
-          - libtext-iconv-perl
-          - libtext-unidecode-perl
-          - libtry-tiny-perl
-          - liburi-perl
-          - libwww-perl
-          - libxml-libxml-perl
-          - libxml-writer-perl
-          - libyaml-perl
-          - poppler-utils
-          - postgresql
-          - postgresql-contrib
-          - python3-passlib
-          - ssl-cert
-          #- texlive-full
-          - libmail-imapclient-perl
-          - libencode-imaputf7-perl
-          - libuuid-tiny-perl
-
-          - latexmk
-          - texlive-binaries
-          - texlive-fonts-recommended
-          - texlive-lang-german
-          - texlive-lang-greek
-          - texlive-latex-extra
-          - texlive-latex-recommended
-          - texlive-luatex
-          - texlive-plain-generic
-
-        state: present
+        name: "{{ kivitendo_packages + kivitendo_latex_packages }}"
+        state: latest
         update_cache: true
-          
-  # install Kivi
-    - name: Ensure git is installed.
-      ansible.builtin.apt:
-        name: git
+        cache_valid_time: 3600
+        policy_rc_d: 101
+
+    - name: Ensure PostgreSQL is enabled and running
+      ansible.builtin.service:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Read PostgreSQL password encryption setting
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --command
+          - SHOW password_encryption;
+      become_user: postgres
+      register: postgres_password_encryption
+      changed_when: false
+
+    - name: Enforce SCRAM password hashing in PostgreSQL
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --set
+          - ON_ERROR_STOP=1
+          - --command
+          - "ALTER SYSTEM SET password_encryption = 'scram-sha-256';"
+      become_user: postgres
+      when: postgres_password_encryption.stdout | trim != 'scram-sha-256'
+      notify: Reload PostgreSQL
+
+    - name: Apply PostgreSQL encryption setting before creating the application role
+      ansible.builtin.meta: flush_handlers
+
+    - name: Create restricted kivitendo PostgreSQL role
+      community.postgresql.postgresql_user:
+        name: "{{ kivitendo_db_user }}"
+        password: "{{ kivitendo_db_password }}"
+        role_attr_flags: LOGIN,CREATEDB,NOSUPERUSER,NOCREATEROLE,NOREPLICATION
+        encrypted: true
         state: present
+      become_user: postgres
+      no_log: true
 
-    - name: Clone repo.
-      ansible.builtin.git:
-        dest:    /var/www/kivitendo-erp
-        repo:    "{{ customer.repo | default('https://github.com/kivitendo/kivitendo-erp.git') }}"
-        version: "{{ customer.version | default('release-4.0.0') }}"
+    - name: Discover PostgreSQL HBA file
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --command
+          - SHOW hba_file;
+      become_user: postgres
+      register: postgres_hba_file
+      changed_when: false
 
-    - name: Copy over Kivitendo.conf.
-      ansible.builtin.copy:
-        src: config-files/kivitendo.conf
-        dest: /var/www/kivitendo-erp/config/kivitendo.conf
-        owner: www-data
-        mode: 'u=rw,g=rw,o='
-      notify: Restart apache
+    - name: Remove legacy localhost trust rule for PostgreSQL superuser
+      community.postgresql.postgresql_pg_hba:
+        dest: "{{ postgres_hba_file.stdout | trim }}"
+        contype: host
+        databases: all
+        users: postgres
+        address: 127.0.0.1/32
+        method: trust
+        state: absent
+        owner: postgres
+        group: postgres
+        mode: '0640'
+        backup: true
+        sort_rules: false
+      notify: Reload PostgreSQL
 
-    - name: Make webdav directory.
-      ansible.builtin.file:
-        path: /var/www/kivitendo-erp/webdav
-        state: directory
-        mode:  'u=Xrw,g=Xrw,o='
-
-
-    - name: Make kivi_documents directory.
-      ansible.builtin.file:
-        path: /var/www/kivitendo-erp/kivi_documents
-        state: directory
-        mode:  'u=Xrw,g=Xrw,o='
-
-    - name: Change permissions.
-      ansible.builtin.file:
-        owner:   www-data
-        path:    "/var/www/kivitendo-erp/{{ item }}"
-        mode:    'u=Xrw,g=Xrw,o='
-        recurse: true
+    - name: Configure SCRAM authentication for the kivitendo database role
+      community.postgresql.postgresql_pg_hba:
+        dest: "{{ postgres_hba_file.stdout | trim }}"
+        contype: "{{ item.contype }}"
+        databases: all
+        users: "{{ kivitendo_db_user }}"
+        address: "{{ item.address | default(omit) }}"
+        method: scram-sha-256
+        state: present
+        owner: postgres
+        group: postgres
+        mode: '0640'
+        sort_rules: true
       loop:
-        - kivi_documents
+        - contype: local
+        - contype: host
+          address: 127.0.0.1/32
+        - contype: host
+          address: ::1/128
+      notify: Reload PostgreSQL
+
+    - name: Read resulting PostgreSQL HBA configuration
+      ansible.builtin.slurp:
+        src: "{{ postgres_hba_file.stdout | trim }}"
+      register: postgres_hba_contents
+
+    - name: Reject active PostgreSQL trust authentication rules
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((postgres_hba_contents.content | b64decode).splitlines()
+            | reject('match', '^\\s*(#|$)')
+            | select('search', '\\btrust\\b')
+            | list
+            | length) == 0
+        fail_msg: >-
+          An active PostgreSQL trust authentication rule remains in pg_hba.conf.
+          Refusing to continue with an unauthenticated database access path.
+
+    - name: Apply PostgreSQL authentication changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Install verified latest kivitendo snapshot at an immutable commit
+      ansible.builtin.git:
+        repo: "{{ kivitendo_repo }}"
+        dest: "{{ kivitendo_install_dir }}"
+        version: "{{ kivitendo_version }}"
+        update: true
+        force: false
+        umask: '0027'
+
+    - name: Read installed kivitendo version marker
+      ansible.builtin.slurp:
+        src: "{{ kivitendo_install_dir }}/VERSION"
+      register: installed_kivitendo_version
+
+    - name: Verify installed kivitendo version
+      ansible.builtin.assert:
+        that:
+          - installed_kivitendo_version.content | b64decode | trim == kivitendo_release
+        fail_msg: >-
+          The pinned commit does not contain the expected kivitendo release
+          {{ kivitendo_release }}.
+
+    - name: Make application source readable but not writable by the web service
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}"
+        state: directory
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: 'u=rwX,g=rX,o='
+        recurse: true
+
+    - name: Restrict Git metadata to root
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}/.git"
+        state: directory
+        owner: root
+        group: root
+        mode: 'u=rwX,g=,o='
+        recurse: true
+
+    - name: Seed live kivitendo configuration from the pinned upstream release
+      ansible.builtin.copy:
+        src: "{{ kivitendo_install_dir }}/config/kivitendo.conf.default"
+        dest: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+        remote_src: true
+        force: false
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: '0640'
+
+    - name: Configure non-secret kivitendo settings
+      community.general.ini_file:
+        path: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+        section: "{{ item.section }}"
+        option: "{{ item.option }}"
+        value: "{{ item.value }}"
+        no_extra_spaces: true
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: '0640'
+      loop:
+        - section: authentication/database
+          option: host
+          value: "{{ kivitendo_db_host }}"
+        - section: authentication/database
+          option: port
+          value: "{{ kivitendo_db_port }}"
+        - section: authentication/database
+          option: db
+          value: "{{ kivitendo_db_name }}"
+        - section: authentication/database
+          option: user
+          value: "{{ kivitendo_db_user }}"
+        - section: paths
+          option: document_path
+          value: "{{ kivitendo_document_dir }}"
+      notify: Restart Apache
+
+    - name: Configure kivitendo secrets without logging them
+      community.general.ini_file:
+        path: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+        section: "{{ item.section }}"
+        option: "{{ item.option }}"
+        value: "{{ item.value }}"
+        no_extra_spaces: true
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: '0640'
+      loop:
+        - section: authentication
+          option: admin_password
+          value: "{{ kivitendo_admin_password }}"
+        - section: authentication/database
+          option: password
+          value: "{{ kivitendo_db_password }}"
+        - section: secrets
+          option: master_key
+          value: "{{ kivitendo_master_key }}"
+      no_log: true
+      notify: Restart Apache
+
+    - name: Create external kivitendo document directory
+      ansible.builtin.file:
+        path: "{{ kivitendo_document_dir }}"
+        state: directory
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        mode: '0750'
+
+    - name: Ensure required kivitendo writable directories exist
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}/{{ item }}"
+        state: directory
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        mode: '0770'
+      loop:
         - users
         - spool
-        - templates
         - webdav
 
-  #  postrgesql for kivi
-    - name: Remove existing rules to ensure correct ordering of the rules
-      ansible.builtin.postgresql_pg_hba:
-        dest:      /etc/postgresql/17/main/pg_hba.conf
-        overwrite: true
-        contype:   local
-        users:     all
-        databases: all
-        method:    peer
-
-    - name: Allow access from localhost to Postgresql.
-      ansible.builtin.postgresql_pg_hba:
-        dest:      /etc/postgresql/17/main/pg_hba.conf
-        contype:   host
-        users:     postgres
-        databases: all
-        address:   127.0.0.1/32
-        method:    trust
-      notify: Restart postgresql
-
-
-  # apache server for kivi
-    - name: Activate apache fastcgi and headers modules.
-      community.general.apache2_module:
-        state: present
-        name: "{{ item }}"
+    - name: Restrict recursively writable kivitendo runtime directories
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}/{{ item }}"
+        state: directory
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        mode: 'u=rwX,g=rwX,o='
+        recurse: true
       loop:
-        - fcgid
-        - headers
-      notify: Restart apache
-      when: not customer.installssl
+        - users
+        - spool
+        - webdav
 
-    - name: Activate apache fastcgi, headers and ssl modules.
-      community.general.apache2_module:
-        state: present
-        name: "{{ item }}"
-      loop:
-        - fcgid
-        - headers
-        - ssl
-        - rewrite
-        - socache_shmcb
-      notify: Enable SSL
-      when: customer.installssl
+    - name: Allow kivitendo to create per-user template directories
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}/templates"
+        state: directory
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        mode: '0750'
 
-    - name: Add a user to a password file suitable for use by libpam-pwdfile
+    - name: Configure optional HTTP Basic Authentication
       community.general.htpasswd:
         path: /etc/apache2/.htpasswd
         name: "{{ basic_auth.user }}"
         password: "{{ basic_auth.password }}"
-      when: use_basic_auth
+        crypt_scheme: bcrypt
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: '0640'
+      when: use_basic_auth | bool
+      no_log: true
+      notify: Restart Apache
 
-    - name: Copy over apache config files.
+    - name: Enable required Apache modules
+      ansible.builtin.command:
+        argv:
+          - a2enmod
+          - "{{ item }}"
+      loop: "{{ ['fcgid', 'headers'] + (['ssl', 'rewrite', 'socache_shmcb', 'http2'] if kivitendo_tls_enabled | bool else []) }}"
+      register: apache_module_enable
+      changed_when: "'Enabling module' in apache_module_enable.stdout"
+      notify: Restart Apache
+
+    - name: Check configured TLS certificate files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: true
+      loop:
+        - "{{ ssl.cert_file }}"
+        - "{{ ssl.cert_key }}"
+      register: tls_certificate_files
+      when: kivitendo_tls_enabled | bool
+
+    - name: Verify configured TLS certificate files and private-key permissions
+      ansible.builtin.assert:
+        that:
+          - tls_certificate_files.results | map(attribute='stat.exists') | min
+          - tls_certificate_files.results[1].stat.pw_name == 'root'
+          - tls_certificate_files.results[1].stat.mode in ['0400', '0440', '0600', '0640']
+          - >-
+            tls_certificate_files.results[1].stat.mode in ['0400', '0600'] or
+            tls_certificate_files.results[1].stat.gr_name in ssl.allowed_key_groups
+        fail_msg: >-
+          TLS certificate files must exist and the private key must be root-owned
+          with mode 0400, 0440, 0600 or 0640. Group-readable private keys are
+          accepted only when the owning group is listed in ssl.allowed_key_groups.
+      when: kivitendo_tls_enabled | bool
+
+    - name: Render secure TLS Apache virtual host
+      ansible.builtin.template:
+        src: config-files/apache/ssl/default-ssl.conf
+        dest: /etc/apache2/sites-available/default-ssl.conf
+        owner: root
+        group: root
+        mode: '0644'
+      when: kivitendo_tls_enabled | bool
+      notify: Restart Apache
+
+    - name: Render explicitly opted-in HTTP Apache virtual host
       ansible.builtin.template:
         src: config-files/apache/no-ssl/000-default.conf
         dest: /etc/apache2/sites-available/000-default.conf
-        mode: '640'
-      notify: Restart apache
-      when: not customer.installssl
+        owner: root
+        group: root
+        mode: '0644'
+      when:
+        - not kivitendo_tls_enabled | bool
+        - allow_insecure_http | bool
+      notify: Restart Apache
 
-    - name: Copy over apache config files.
+    - name: Enable TLS site
+      ansible.builtin.command:
+        argv:
+          - a2ensite
+          - default-ssl.conf
+      register: enable_tls_site
+      changed_when: "'Enabling site' in enable_tls_site.stdout"
+      when: kivitendo_tls_enabled | bool
+      notify: Restart Apache
+
+    - name: Disable default HTTP site when TLS is enabled
+      ansible.builtin.command:
+        argv:
+          - a2dissite
+          - 000-default.conf
+      register: disable_http_site
+      changed_when: "'Disabling site' in disable_http_site.stdout"
+      when: kivitendo_tls_enabled | bool
+      notify: Restart Apache
+
+    - name: Enable explicitly opted-in HTTP site
+      ansible.builtin.command:
+        argv:
+          - a2ensite
+          - 000-default.conf
+      register: enable_http_site
+      changed_when: "'Enabling site' in enable_http_site.stdout"
+      when:
+        - not kivitendo_tls_enabled | bool
+        - allow_insecure_http | bool
+      notify: Restart Apache
+
+    - name: Disable TLS site for explicitly opted-in HTTP deployment
+      ansible.builtin.command:
+        argv:
+          - a2dissite
+          - default-ssl.conf
+      register: disable_tls_site
+      changed_when: "'Disabling site' in disable_tls_site.stdout"
+      when:
+        - not kivitendo_tls_enabled | bool
+        - allow_insecure_http | bool
+      notify: Restart Apache
+
+    - name: Validate Apache configuration before starting the service
+      ansible.builtin.command:
+        argv:
+          - apache2ctl
+          - configtest
+      changed_when: false
+
+    - name: Install hardened kivitendo task server service
       ansible.builtin.template:
-        src: "config-files/apache/ssl/{{ item }}"
-        dest: "/etc/apache2/sites-available/{{ item }}"
-        mode: '640'
-      loop:
-        - default-ssl.conf
-      notify: Restart apache
-      when: customer.installssl
-    
-    - name: Disable 000-default.conf
-      shell: a2dissite 000-default.conf
-      when: customer.installssl
-
-    - name: Install kivitendo-task-server
-      when: kivi_backup
-      ansible.builtin.copy:
         src: config-files/kivitendo-task-server.service
         dest: /etc/systemd/system/kivitendo-task-server.service
         owner: root
-        mode: 'u=rw,g=rw,o='
-      notify: systemd_daemon_reload
+        group: root
+        mode: '0644'
+      when: kivitendo_task_server_enabled | bool
+      notify: Reload systemd
 
-    - name: Start kivitendo-task-server
-      when: kivi_backup
-      ansible.builtin.systemd:
-        name: kivitendo-task-server
+    - name: Apply systemd changes before starting task server
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure Apache is enabled and running with validated configuration
+      ansible.builtin.service:
+        name: apache2
         state: started
         enabled: true
 
-# vim: set ft=yaml.ansible
+    - name: Ensure kivitendo task server is enabled and running
+      ansible.builtin.systemd_service:
+        name: kivitendo-task-server
+        state: started
+        enabled: true
+      when: kivitendo_task_server_enabled | bool
+
+    - name: Verify required kivitendo and LaTeX dependencies
+      ansible.builtin.command:
+        argv:
+          - "{{ kivitendo_install_dir }}/scripts/installation_check.pl"
+          - --required
+          - --latex
+          - --silent
+        chdir: "{{ kivitendo_install_dir }}"
+      changed_when: false
+
+    - name: Read installed kivitendo commit
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ kivitendo_install_dir }}"
+          - rev-parse
+          - HEAD
+      register: installed_kivitendo_commit
+      changed_when: false
+
+    - name: Verify immutable kivitendo source revision
+      ansible.builtin.assert:
+        that:
+          - installed_kivitendo_commit.stdout | trim == kivitendo_version
+        fail_msg: >-
+          Installed kivitendo revision does not match the verified pinned commit.
+
+    - name: Verify live kivitendo configuration permissions
+      ansible.builtin.stat:
+        path: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+      register: kivitendo_config_stat
+
+    - name: Reject writable or publicly readable live configuration
+      ansible.builtin.assert:
+        that:
+          - kivitendo_config_stat.stat.pw_name == 'root'
+          - kivitendo_config_stat.stat.gr_name == kivitendo_web_group
+          - kivitendo_config_stat.stat.mode == '0640'
+        fail_msg: >-
+          kivitendo.conf must be root-owned, group-readable by the web server,
+          and inaccessible to other users.
+
+    - name: Verify kivitendo database role can authenticate with SCRAM
+      community.postgresql.postgresql_ping:
+        login_host: "{{ kivitendo_db_host }}"
+        login_port: "{{ kivitendo_db_port | int }}"
+        login_user: "{{ kivitendo_db_user }}"
+        login_password: "{{ kivitendo_db_password }}"
+        login_db: postgres
+      register: kivitendo_database_ping
+      no_log: true
+
+    - name: Require successful kivitendo database authentication
+      ansible.builtin.assert:
+        that:
+          - kivitendo_database_ping.is_available | bool
+        fail_msg: >-
+          The dedicated kivitendo PostgreSQL role could not authenticate through
+          the configured SCRAM-protected localhost connection.
+      no_log: true
