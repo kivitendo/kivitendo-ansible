@@ -15,21 +15,46 @@
           - default-ssl
       changed_when: true
       notify: Restart apache
-      when: install_SSL | bool
+      when:
+        - webserver == 'apache'
+        - install_SSL | bool
 
     - name: Restart apache
       ansible.builtin.service:
         name: apache2
         state: restarted
+      listen: Restart selected webserver
+      when: webserver == 'apache'
+
+    - name: Restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+      listen: Restart selected webserver
+      when: webserver == 'nginx'
+
+    - name: systemd_daemon_reload
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Restart apache application
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+      listen: Restart kivitendo application
+      when: webserver == 'apache'
+
+    - name: Restart nginx FastCGI application
+      ansible.builtin.systemd:
+        name: kivitendo-fcgi
+        state: restarted
+      listen: Restart kivitendo application
+      when: webserver == 'nginx'
 
     - name: Reload postgresql
       ansible.builtin.service:
         name: postgresql
         state: reloaded
-
-    - name: systemd_daemon_reload
-      ansible.builtin.systemd_service:
-        daemon_reload: true
 
   pre_tasks:
     - name: Verify target is Debian 13 and bootstrap Python 3 when required
@@ -69,6 +94,13 @@
           This compatibility branch supports Debian {{ supported_debian_major_version }} only.
           Detected {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
 
+    - name: Validate selected webserver
+      ansible.builtin.assert:
+        that:
+          - webserver in ['apache', 'nginx']
+        fail_msg: >-
+          Unsupported webserver '{{ webserver }}'. Supported values are 'apache' and 'nginx'.
+
     - name: Validate required secrets
       ansible.builtin.assert:
         that:
@@ -99,18 +131,58 @@
       when: use_basic_auth | bool
       no_log: true
 
-    - name: Validate TLS certificate policy
+    - name: Resolve effective TLS paths
+      ansible.builtin.set_fact:
+        effective_ssl_cert_file: >-
+          {{ (customer | default({})).get('ssl', {}).get('CertFile', ssl.CertFile) }}
+        effective_ssl_key_file: >-
+          {{ (customer | default({})).get('ssl', {}).get('CertKey', ssl.CertKey) }}
+        effective_ssl_chain_file: >-
+          {{ (customer | default({})).get('ssl', {}).get('ChainFile', ssl.ChainFile) }}
+      when: install_SSL | bool
+
+    - name: Check TLS certificate file
+      ansible.builtin.stat:
+        path: "{{ effective_ssl_cert_file }}"
+        follow: true
+      register: tls_certificate_file
+      when: install_SSL | bool
+
+    - name: Check TLS private key file
+      ansible.builtin.stat:
+        path: "{{ effective_ssl_key_file }}"
+        follow: true
+      register: tls_private_key_file
+      when: install_SSL | bool
+
+    - name: Check TLS chain file
+      ansible.builtin.stat:
+        path: "{{ effective_ssl_chain_file }}"
+        follow: true
+      register: tls_chain_file
+      when:
+        - install_SSL | bool
+        - effective_ssl_chain_file | length > 0
+
+    - name: Validate TLS certificate prerequisites
       ansible.builtin.assert:
         that:
-          - ssl.CertFile | length > 0
-          - ssl.CertKey | length > 0
+          - effective_ssl_cert_file | length > 0
+          - effective_ssl_key_file | length > 0
+          - tls_certificate_file.stat.exists
+          - tls_certificate_file.stat.isreg
+          - tls_private_key_file.stat.exists
+          - tls_private_key_file.stat.isreg
+          - >-
+            effective_ssl_chain_file | length == 0 or
+            (tls_chain_file.stat.exists and tls_chain_file.stat.isreg)
           - >-
             allow_test_certificate | bool or
-            ('snakeoil' not in ssl.CertFile and 'snakeoil' not in ssl.CertKey)
+            ('snakeoil' not in effective_ssl_cert_file and 'snakeoil' not in effective_ssl_key_file)
         fail_msg: >-
-          TLS is enabled but no production certificate has been configured.
-          Set ssl.CertFile and ssl.CertKey, or explicitly set
-          allow_test_certificate=true for an isolated test system.
+          TLS is enabled, but the configured certificate prerequisites are not satisfied.
+          Place the certificate, private key, and optional chain file on the target first,
+          then configure ssl.CertFile, ssl.CertKey, and ssl.ChainFile in vars.yml.
       when: install_SSL | bool
 
   tasks:
@@ -118,10 +190,8 @@
       ansible.builtin.apt:
         name:
           - acl
-          - apache2
           - ca-certificates
           - git
-          - libapache2-mod-fcgid
           - libalgorithm-checkdigits-perl
           - libarchive-zip-perl
           - libauthen-sasl-perl
@@ -205,6 +275,14 @@
         state: present
         update_cache: true
         cache_valid_time: 3600
+
+    - name: Install selected webserver packages
+      ansible.builtin.apt:
+        name: >-
+          {{ ['apache2', 'libapache2-mod-fcgid'] if webserver == 'apache'
+             else ['nginx', 'spawn-fcgi'] }}
+        state: present
+        policy_rc_d: 101
 
     - name: Ensure PostgreSQL is enabled and running
       ansible.builtin.service:
@@ -323,7 +401,7 @@
         owner: root
         group: "{{ kivitendo_web_group }}"
         mode: '0640'
-      notify: Restart apache
+      notify: Restart kivitendo application
 
     - name: Configure kivitendo authentication database and secrets
       community.general.ini_file:
@@ -356,7 +434,7 @@
           option: master_key
           value: "{{ kivitendo_master_key }}"
       no_log: true
-      notify: Restart apache
+      notify: Restart kivitendo application
 
     - name: Make webdav directory
       ansible.builtin.file:
@@ -387,7 +465,37 @@
         - templates
         - webdav
 
-    - name: Activate apache fastcgi and headers modules
+    - name: Gather service facts before switching webservers
+      ansible.builtin.service_facts:
+
+    - name: Stop inactive Apache service when nginx is selected
+      ansible.builtin.service:
+        name: apache2
+        state: stopped
+        enabled: false
+      when:
+        - webserver == 'nginx'
+        - "'apache2.service' in ansible_facts.services"
+
+    - name: Stop inactive nginx service when Apache is selected
+      ansible.builtin.service:
+        name: nginx
+        state: stopped
+        enabled: false
+      when:
+        - webserver == 'apache'
+        - "'nginx.service' in ansible_facts.services"
+
+    - name: Stop inactive nginx FastCGI worker when Apache is selected
+      ansible.builtin.systemd:
+        name: kivitendo-fcgi
+        state: stopped
+        enabled: false
+      when:
+        - webserver == 'apache'
+        - "'kivitendo-fcgi.service' in ansible_facts.services"
+
+    - name: Activate Apache FastCGI and headers modules
       community.general.apache2_module:
         state: present
         name: "{{ item }}"
@@ -395,9 +503,11 @@
         - fcgid
         - headers
       notify: Restart apache
-      when: not install_SSL | bool
+      when:
+        - webserver == 'apache'
+        - not install_SSL | bool
 
-    - name: Activate apache fastcgi, headers and ssl modules
+    - name: Activate Apache FastCGI, headers and SSL modules
       community.general.apache2_module:
         state: present
         name: "{{ item }}"
@@ -408,18 +518,21 @@
         - rewrite
         - socache_shmcb
       notify: Enable SSL
-      when: install_SSL | bool
+      when:
+        - webserver == 'apache'
+        - install_SSL | bool
 
-    - name: Add a user to the Apache password file
+    - name: Add a user to the selected webserver password file
       community.general.htpasswd:
-        path: /etc/apache2/.htpasswd
+        path: "{{ '/etc/apache2/.htpasswd' if webserver == 'apache' else '/etc/nginx/.htpasswd' }}"
         name: "{{ basic_auth.user }}"
         password: "{{ basic_auth.password }}"
         owner: root
-        group: www-data
+        group: "{{ kivitendo_web_group }}"
         mode: '0640'
       when: use_basic_auth | bool
       no_log: true
+      notify: Restart selected webserver
 
     - name: Copy over non-TLS Apache config file
       ansible.builtin.template:
@@ -429,7 +542,9 @@
         group: root
         mode: '0644'
       notify: Restart apache
-      when: not install_SSL | bool
+      when:
+        - webserver == 'apache'
+        - not install_SSL | bool
 
     - name: Copy over TLS Apache config file
       ansible.builtin.template:
@@ -439,16 +554,20 @@
         group: root
         mode: '0644'
       notify: Restart apache
-      when: install_SSL | bool
+      when:
+        - webserver == 'apache'
+        - install_SSL | bool
 
-    - name: Disable 000-default.conf when TLS is enabled
+    - name: Disable 000-default.conf when Apache TLS is enabled
       ansible.builtin.command:
         argv:
           - a2dissite
           - 000-default.conf
       register: disable_default_site
       changed_when: "'Site 000-default disabled' in disable_default_site.stdout"
-      when: install_SSL | bool
+      when:
+        - webserver == 'apache'
+        - install_SSL | bool
       notify: Restart apache
 
     - name: Validate Apache configuration
@@ -457,6 +576,119 @@
           - apache2ctl
           - configtest
       changed_when: false
+      when: webserver == 'apache'
+
+    - name: Ensure Apache is enabled and running
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: true
+      when: webserver == 'apache'
+
+    - name: Ensure nginx FastCGI dispatcher is executable
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}/fcgi/dispatcher.fcgi"
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: '0750'
+      when: webserver == 'nginx'
+      notify: Restart kivitendo application
+
+    - name: Install systemd unit for nginx FastCGI application worker
+      ansible.builtin.template:
+        src: config-files/nginx/kivitendo-fcgi.service
+        dest: /etc/systemd/system/kivitendo-fcgi.service
+        owner: root
+        group: root
+        mode: '0644'
+      when: webserver == 'nginx'
+      notify: Restart kivitendo application
+
+    - name: Reload systemd after installing nginx FastCGI worker
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: webserver == 'nginx'
+
+    - name: Start and enable nginx FastCGI application worker
+      ansible.builtin.systemd:
+        name: kivitendo-fcgi
+        state: started
+        enabled: true
+      when: webserver == 'nginx'
+
+    - name: Read nginx TLS certificate file
+      ansible.builtin.slurp:
+        path: "{{ effective_ssl_cert_file }}"
+      register: nginx_tls_certificate
+      when:
+        - webserver == 'nginx'
+        - install_SSL | bool
+
+    - name: Read nginx TLS chain file
+      ansible.builtin.slurp:
+        path: "{{ effective_ssl_chain_file }}"
+      register: nginx_tls_chain
+      when:
+        - webserver == 'nginx'
+        - install_SSL | bool
+        - effective_ssl_chain_file | length > 0
+
+    - name: Build nginx full certificate chain
+      ansible.builtin.copy:
+        dest: /etc/nginx/kivitendo-fullchain.pem
+        owner: root
+        group: root
+        mode: '0644'
+        content: |-
+          {{ nginx_tls_certificate.content | b64decode | trim }}
+          {% if effective_ssl_chain_file | length > 0 %}
+          {{ nginx_tls_chain.content | b64decode | trim }}
+          {% endif %}
+      when:
+        - webserver == 'nginx'
+        - install_SSL | bool
+      notify: Restart nginx
+
+    - name: Install nginx kivitendo site configuration
+      ansible.builtin.template:
+        src: config-files/nginx/kivitendo.conf
+        dest: /etc/nginx/sites-available/kivitendo.conf
+        owner: root
+        group: root
+        mode: '0644'
+      when: webserver == 'nginx'
+      notify: Restart nginx
+
+    - name: Disable default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      when: webserver == 'nginx'
+      notify: Restart nginx
+
+    - name: Enable nginx kivitendo site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/kivitendo.conf
+        dest: /etc/nginx/sites-enabled/kivitendo.conf
+        state: link
+        force: true
+      when: webserver == 'nginx'
+      notify: Restart nginx
+
+    - name: Validate nginx configuration
+      ansible.builtin.command:
+        argv:
+          - nginx
+          - -t
+      changed_when: false
+      when: webserver == 'nginx'
+
+    - name: Ensure nginx is enabled and running
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+      when: webserver == 'nginx'
 
     - name: Install kivitendo-task-server
       when: kivi_backup | bool
