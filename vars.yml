@@ -2,11 +2,11 @@
 # Supported target platform. Debian point releases remain compatible within Debian 13.
 supported_debian_major_version: "13"
 
-# Verified stable kivitendo release as of 2026-07-15.
-# Pinning the exact upstream release commit prevents an installation from drifting
-# if a mutable Git ref is moved later.
-kivitendo_release: "4.0.0"
-kivitendo_version: "1ca1785a12a054fbd07f7365fd39145694b44d61"
+# Verified latest upstream kivitendo snapshot as of 2026-07-15.
+# This is the current master head and identifies itself as 4.0.1-unstable.
+# Pinning the exact commit prevents installation drift if the branch moves later.
+kivitendo_release: "4.0.1-unstable"
+kivitendo_version: "b24246b3f1159de3c9def7b0b564641cd1dddd8c"
 kivitendo_repo: "https://github.com/kivitendo/kivitendo-erp.git"
 kivitendo_install_dir: "/var/www/kivitendo-erp"
 kivitendo_document_dir: "/var/lib/kivitendo/documents"
@@ -33,6 +33,9 @@ kivitendo_tls_enabled: true
 allow_insecure_http: false
 kivitendo_server_name: ""
 kivitendo_hsts_enabled: true
+allow_test_certificate: false
+kivitendo_max_request_bytes: 104857600
+kivitendo_fcgid_io_timeout: 600
 ssl:
   cert_file: "/etc/ssl/certs/ssl-cert-snakeoil.pem"
   cert_key: "/etc/ssl/private/ssl-cert-snakeoil.key"
@@ -44,11 +47,12 @@ basic_auth:
   user: ""
   password: ""
 
-# kivitendo documentation recommends running the task server because background
-# jobs and recurring invoices depend on it.
-kivitendo_task_server_enabled: true
+# The task server needs an initialized kivitendo authentication/client database.
+# Keep it disabled for the first installation run; enable it after completing
+# database initialization in the kivitendo administration interface and rerun the playbook.
+kivitendo_task_server_enabled: false
 
-# Debian packages required by kivitendo 4.0.0 plus selected optional modules for
+# Debian packages required by the pinned kivitendo snapshot plus selected optional modules for
 # TLS-protected SMTP/IMAP use. The playbook installs the newest candidate versions
 # available from the target's configured Debian 13 repositories.
 kivitendo_packages:
