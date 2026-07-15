@@ -105,21 +105,26 @@ function Protect-SecretFile {
     $isWindowsPlatform = $env:OS -eq "Windows_NT"
     if ($isWindowsPlatform) {
         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        $userSid = $identity.User
-        if ($null -eq $userSid) {
-            throw "Unable to determine the current Windows user SID."
-        }
+        try {
+            $userSid = $identity.User
+            if ($null -eq $userSid) {
+                throw "Unable to determine the current Windows user SID."
+            }
 
-        $acl = [System.Security.AccessControl.FileSecurity]::new()
-        $acl.SetOwner($userSid)
-        $acl.SetAccessRuleProtection($true, $false)
-        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-            $userSid,
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )
-        [void]$acl.AddAccessRule($rule)
-        Set-Acl -LiteralPath $Path -AclObject $acl
+            $acl = [System.Security.AccessControl.FileSecurity]::new()
+            $acl.SetOwner($userSid)
+            $acl.SetAccessRuleProtection($true, $false)
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                $userSid,
+                [System.Security.AccessControl.FileSystemRights]::FullControl,
+                [System.Security.AccessControl.AccessControlType]::Allow
+            )
+            [void]$acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $Path -AclObject $acl
+        }
+        finally {
+            $identity.Dispose()
+        }
         return
     }
 
@@ -157,6 +162,22 @@ if ((Test-Path -LiteralPath $fullOutputPath) -and -not $Force) {
     throw "Output file '$fullOutputPath' already exists. Use -Force to replace it intentionally."
 }
 
+$ansibleVault = $null
+$resolvedVaultPasswordFile = $null
+if ($EncryptWithAnsibleVault) {
+    $ansibleVault = Get-Command ansible-vault -ErrorAction SilentlyContinue
+    if ($null -eq $ansibleVault) {
+        throw "EncryptWithAnsibleVault was requested, but ansible-vault is not available in PATH."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($VaultPasswordFile)) {
+        $resolvedVaultPasswordFile = [System.IO.Path]::GetFullPath($VaultPasswordFile)
+        if (-not (Test-Path -LiteralPath $resolvedVaultPasswordFile -PathType Leaf)) {
+            throw "Vault password file '$resolvedVaultPasswordFile' does not exist."
+        }
+    }
+}
+
 $adminPassword = New-CryptographicRandomString -Length $AdminPasswordLength
 $databasePassword = New-CryptographicRandomString -Length $DatabasePasswordLength
 $masterKey = New-CryptographicRandomString -Length $MasterKeyLength
@@ -180,6 +201,7 @@ if ($IncludeBasicAuth) {
 
 $content = ($lines -join [Environment]::NewLine) + [Environment]::NewLine
 $tempPath = Join-Path $outputDirectory (".{0}.{1}.tmp" -f ([System.IO.Path]::GetFileName($fullOutputPath)), [Guid]::NewGuid().ToString("N"))
+$didWrite = $false
 
 try {
     if ($PSCmdlet.ShouldProcess($fullOutputPath, "Generate cryptographically random kivitendo secrets")) {
@@ -196,20 +218,12 @@ try {
 
         Move-Item -LiteralPath $tempPath -Destination $fullOutputPath
         Protect-SecretFile -Path $fullOutputPath
+        $didWrite = $true
 
         if ($EncryptWithAnsibleVault) {
-            $ansibleVault = Get-Command ansible-vault -ErrorAction SilentlyContinue
-            if ($null -eq $ansibleVault) {
-                throw "EncryptWithAnsibleVault was requested, but ansible-vault is not available in PATH."
-            }
-
             $vaultArguments = [System.Collections.Generic.List[string]]::new()
             $vaultArguments.Add("encrypt")
-            if (-not [string]::IsNullOrWhiteSpace($VaultPasswordFile)) {
-                $resolvedVaultPasswordFile = [System.IO.Path]::GetFullPath($VaultPasswordFile)
-                if (-not (Test-Path -LiteralPath $resolvedVaultPasswordFile -PathType Leaf)) {
-                    throw "Vault password file '$resolvedVaultPasswordFile' does not exist."
-                }
+            if ($null -ne $resolvedVaultPasswordFile) {
                 $vaultArguments.Add("--vault-password-file")
                 $vaultArguments.Add($resolvedVaultPasswordFile)
             }
@@ -217,7 +231,9 @@ try {
 
             & $ansibleVault.Source @vaultArguments
             if ($LASTEXITCODE -ne 0) {
-                throw "ansible-vault encryption failed for '$fullOutputPath'."
+                Remove-Item -LiteralPath $fullOutputPath -Force -ErrorAction SilentlyContinue
+                $didWrite = $false
+                throw "ansible-vault encryption failed; the generated plaintext file was removed."
             }
             Protect-SecretFile -Path $fullOutputPath
         }
@@ -239,7 +255,9 @@ finally {
     $lines.Clear()
 }
 
-Write-Host "Secrets written to: $fullOutputPath"
-if (-not $EncryptWithAnsibleVault) {
-    Write-Host "Next step: encrypt the file with 'ansible-vault encrypt secrets.yml' before long-term storage."
+if ($didWrite) {
+    Write-Host "Secrets written to: $fullOutputPath"
+    if (-not $EncryptWithAnsibleVault) {
+        Write-Host "Next step: encrypt the file with 'ansible-vault encrypt secrets.yml' before long-term storage."
+    }
 }
