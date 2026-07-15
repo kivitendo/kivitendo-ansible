@@ -11,6 +11,11 @@ ssl:
     - root
     - ssl-cert
 
+# Apache remains the default for upstream compatibility. Set this to "nginx" to
+# use nginx with a systemd-managed FastCGI worker over a local Unix socket.
+webserver: apache
+kivitendo_fastcgi_socket: "/run/kivitendo/dispatcher.sock"
+
 use_basic_auth: false
 
 basic_auth:
@@ -47,8 +52,8 @@ kivitendo_admin_password: ""
 kivitendo_db_password: ""
 kivitendo_master_key: ""
 
-# Apache/application tuning. Existing install_SSL and ssl.* names above remain
-# the public compatibility interface.
+# Webserver/application tuning. Existing install_SSL and ssl.* names above remain
+# the public compatibility interface for both Apache and nginx.
 kivitendo_server_name: ""
 kivitendo_hsts_enabled: true
 allow_test_certificate: false
