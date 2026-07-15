@@ -9,13 +9,13 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  validate-debian:
     runs-on: ubuntu-latest
     container:
       image: debian:13
 
     steps:
-      - name: Install minimal validation prerequisites
+      - name: Install minimal checkout prerequisites
         shell: bash
         run: |
           set -euo pipefail
@@ -23,10 +23,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates \
-            git \
-            python3 \
-            python3-venv \
-            ruby
+            git
           rm -rf /var/lib/apt/lists/*
 
       - name: Check out exact workflow revision without third-party actions
@@ -45,13 +42,13 @@ jobs:
             fetch --depth=1 origin "${REVISION_REF}"
           git checkout --detach FETCH_HEAD
 
-      - name: Install pinned Ansible dependencies
+      - name: Validate bootstrap shell syntax
         shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m venv .venv
-          .venv/bin/pip install --disable-pip-version-check -r requirements.txt
-          .venv/bin/ansible-galaxy collection install -r requirements.yml
+        run: bash -n scripts/bootstrap-debian-controller.sh
+
+      - name: Bootstrap minimal Debian Ansible controller
+        shell: bash
+        run: bash scripts/bootstrap-debian-controller.sh
 
       - name: Run static security validation
         shell: bash
@@ -61,6 +58,69 @@ jobs:
         shell: bash
         run: .venv/bin/ansible-playbook --syntax-check -i inventory main.yml
 
-      - name: Validate Vagrantfile Ruby syntax
-        shell: bash
-        run: ruby -c Vagrantfile
+  validate-powershell:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out exact workflow revision without third-party actions
+        shell: pwsh
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION_REF: ${{ github.ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config --global --add safe.directory $env:GITHUB_WORKSPACE
+          git init .
+          git remote add origin "https://github.com/$env:REPOSITORY.git"
+          $credential = "x-access-token:$env:GITHUB_TOKEN"
+          $authHeader = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($credential))
+          git -c "http.extraheader=AUTHORIZATION: basic $authHeader" fetch --depth=1 origin $env:REVISION_REF
+          git checkout --detach FETCH_HEAD
+
+      - name: Generate and validate cryptographic secrets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputPath = Join-Path $env:RUNNER_TEMP 'kivitendo-secrets.yml'
+          & ./scripts/New-KivitendoSecrets.ps1 -OutputPath $outputPath
+
+          if (-not (Test-Path -LiteralPath $outputPath -PathType Leaf)) {
+            throw 'Secret generator did not create the output file.'
+          }
+
+          $content = Get-Content -LiteralPath $outputPath -Raw
+          $expectedLengths = [ordered]@{
+            kivitendo_admin_password = 32
+            kivitendo_db_password = 40
+            kivitendo_master_key = 64
+          }
+
+          foreach ($entry in $expectedLengths.GetEnumerator()) {
+            $name = [Regex]::Escape($entry.Key)
+            $match = [Regex]::Match($content, "(?m)^${name}: '([A-Za-z0-9]+)'\r?$")
+            if (-not $match.Success) {
+              throw "Missing or malformed generated secret: $($entry.Key)"
+            }
+            if ($match.Groups[1].Value.Length -ne $entry.Value) {
+              throw "Unexpected generated length for $($entry.Key)."
+            }
+          }
+
+          $acl = Get-Acl -LiteralPath $outputPath
+          if (-not $acl.AreAccessRulesProtected) {
+            throw 'Generated secret file still inherits Windows ACL entries.'
+          }
+
+          $overwriteWasBlocked = $false
+          try {
+            & ./scripts/New-KivitendoSecrets.ps1 -OutputPath $outputPath
+          }
+          catch {
+            $overwriteWasBlocked = $true
+          }
+          if (-not $overwriteWasBlocked) {
+            throw 'Secret generator overwrote an existing file without -Force.'
+          }
+
+          Remove-Item -LiteralPath $outputPath -Force
