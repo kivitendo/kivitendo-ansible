@@ -65,9 +65,9 @@
           - kivitendo_admin_password | length >= 20
           - kivitendo_db_password | length >= 24
           - kivitendo_master_key | length >= 32
-          - "'\n' not in kivitendo_admin_password and '\r' not in kivitendo_admin_password"
-          - "'\n' not in kivitendo_db_password and '\r' not in kivitendo_db_password"
-          - "'\n' not in kivitendo_master_key and '\r' not in kivitendo_master_key"
+          - "'\\n' not in kivitendo_admin_password and '\\r' not in kivitendo_admin_password"
+          - "'\\n' not in kivitendo_db_password and '\\r' not in kivitendo_db_password"
+          - "'\\n' not in kivitendo_master_key and '\\r' not in kivitendo_master_key"
           - kivitendo_admin_password not in ['admin123', 'changeme', '<set-with-ansible-vault>']
           - kivitendo_db_password not in ['admin123', 'changeme', '<set-with-ansible-vault>']
           - kivitendo_master_key not in ['admin123', 'changeme', '<set-with-ansible-vault>']
@@ -84,6 +84,20 @@
         fail_msg: >-
           TLS is disabled, but allow_insecure_http is not explicitly true.
           The playbook fails closed instead of silently deploying kivitendo over HTTP.
+
+    - name: Validate TLS certificate policy
+      ansible.builtin.assert:
+        that:
+          - ssl.cert_file | length > 0
+          - ssl.cert_key | length > 0
+          - >-
+            allow_test_certificate | bool or
+            ('snakeoil' not in ssl.cert_file and 'snakeoil' not in ssl.cert_key)
+        fail_msg: >-
+          TLS is enabled but no production certificate has been configured.
+          Replace the Debian snake-oil certificate paths, or set
+          allow_test_certificate=true explicitly for an isolated test system.
+      when: kivitendo_tls_enabled | bool
 
     - name: Validate Basic Authentication settings
       ansible.builtin.assert:
@@ -193,7 +207,7 @@
         owner: postgres
         group: postgres
         mode: '0640'
-        sort_rules: false
+        sort_rules: true
       loop:
         - contype: local
         - contype: host
@@ -212,8 +226,8 @@
         that:
           - >-
             ((postgres_hba_contents.content | b64decode).splitlines()
-            | reject('match', '^\s*(#|$)')
-            | select('search', '\btrust\b')
+            | reject('match', '^\\s*(#|$)')
+            | select('search', '\\btrust\\b')
             | list
             | length) == 0
         fail_msg: >-
@@ -223,7 +237,7 @@
     - name: Apply PostgreSQL authentication changes
       ansible.builtin.meta: flush_handlers
 
-    - name: Install verified kivitendo stable release at an immutable commit
+    - name: Install verified latest kivitendo snapshot at an immutable commit
       ansible.builtin.git:
         repo: "{{ kivitendo_repo }}"
         dest: "{{ kivitendo_install_dir }}"
@@ -397,12 +411,15 @@
       register: tls_certificate_files
       when: kivitendo_tls_enabled | bool
 
-    - name: Verify configured TLS certificate files exist
+    - name: Verify configured TLS certificate files and private-key permissions
       ansible.builtin.assert:
         that:
           - tls_certificate_files.results | map(attribute='stat.exists') | min
+          - tls_certificate_files.results[1].stat.pw_name == 'root'
+          - tls_certificate_files.results[1].stat.mode in ['0400', '0440', '0600', '0640']
         fail_msg: >-
-          TLS is enabled, but at least one configured certificate file is missing.
+          TLS certificate files must exist and the private key must be root-owned
+          with mode 0400, 0440, 0600 or 0640.
       when: kivitendo_tls_enabled | bool
 
     - name: Render secure TLS Apache virtual host
