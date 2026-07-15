@@ -1,12 +1,54 @@
 ---
+# Existing upstream interface: keep these names stable for downstream users.
 install_SSL: false
 ssl:
   CertFile: /etc/ssl/certs/SSLCert.crt
   CertKey: /etc/ssl/private/Private.key
   ChainFile: /etc/ssl/certs/Intermediate.crt
+  allowed_key_groups:
+    - root
+    - ssl-cert
 
 use_basic_auth: false
 
 basic_auth:
-  user: user
-  password: changeme
+  user: ""
+  password: ""
+
+# Existing upstream task-server switch. It remains disabled until the kivitendo
+# authentication/client databases have been initialized through the admin UI.
+kivi_backup: false
+
+# Supported target platform. Debian point releases remain compatible within Debian 13.
+supported_debian_major_version: "13"
+
+# Default kivitendo source. Existing customer.repo and customer.version inventory
+# overrides remain supported by main.yml.
+kivitendo_repo: "https://github.com/kivitendo/kivitendo-erp.git"
+kivitendo_release: "4.0.1-unstable"
+kivitendo_version: "b24246b3f1159de3c9def7b0b564641cd1dddd8c"
+kivitendo_install_dir: "/var/www/kivitendo-erp"
+kivitendo_document_dir: "/var/www/kivitendo-erp/kivi_documents"
+kivitendo_web_user: "www-data"
+kivitendo_web_group: "www-data"
+
+# PostgreSQL settings. A dedicated non-superuser role is used instead of
+# passwordless trust authentication as postgres.
+kivitendo_db_host: "127.0.0.1"
+kivitendo_db_port: "5432"
+kivitendo_db_name: "kivitendo_auth"
+kivitendo_db_user: "kivitendo"
+
+# Required secrets. Keep these empty in Git and supply them through Ansible Vault
+# or another protected variable source. See secrets.example.yml and README.md.
+kivitendo_admin_password: ""
+kivitendo_db_password: ""
+kivitendo_master_key: ""
+
+# Apache/application tuning. Existing install_SSL and ssl.* names above remain
+# the public compatibility interface.
+kivitendo_server_name: ""
+kivitendo_hsts_enabled: true
+allow_test_certificate: false
+kivitendo_max_request_bytes: 104857600
+kivitendo_fcgid_io_timeout: 600

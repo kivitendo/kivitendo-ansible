@@ -5,60 +5,141 @@
   gather_facts: false
 
   vars_files:
-    vars.yml
+    - vars.yml
 
   handlers:
     - name: Enable SSL
-      ansible.builtin.command: a2ensite default-ssl
+      ansible.builtin.command:
+        argv:
+          - a2ensite
+          - default-ssl
+      changed_when: true
       notify: Restart apache
-      when: customer.installssl
+      when: install_SSL | bool
 
     - name: Restart apache
       ansible.builtin.service:
         name: apache2
         state: restarted
 
-    - name: Restart postgresql
+    - name: Reload postgresql
       ansible.builtin.service:
         name: postgresql
-        state: restarted
+        state: reloaded
 
     - name: systemd_daemon_reload
       ansible.builtin.systemd_service:
         daemon_reload: true
 
-  tasks:
-
-    - name: Install Python on Debian-based Distros
-      ansible.builtin.raw: bash -c '(which python3 && echo "Present") || (apt-get -y install python3 && echo "Installed") || echo "Failed"'
+  pre_tasks:
+    - name: Verify target is Debian 13 and bootstrap Python 3 when required
+      ansible.builtin.raw: |
+        set -eu
+        . /etc/os-release
+        test "${ID:-}" = "debian"
+        test "${VERSION_ID%%.*}" = "{{ supported_debian_major_version }}"
+        if command -v python3 >/dev/null 2>&1; then
+          echo PRESENT
+        else
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y --no-install-recommends python3
+          echo INSTALLED
+        fi
       register: python_install_output
-      changed_when: python_install_output.stdout_lines[-1] == 'Installed'
-      failed_when: python_install_output.stdout_lines[-1] not in ['Installed', 'Present']
+      changed_when: "'INSTALLED' in python_install_output.stdout"
 
+    - name: Gather system facts
+      ansible.builtin.setup:
 
-    - name: Update repos and install dependencies.
+    - name: Verify supported Ansible version
+      ansible.builtin.assert:
+        that:
+          - ansible_version.full is version('2.21.0', '>=')
+        fail_msg: >-
+          ansible-core 2.21 or newer is required. Run
+          scripts/bootstrap-debian-controller.sh on the controller first.
+
+    - name: Verify Debian 13 target
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Debian'
+          - ansible_facts.distribution_major_version == supported_debian_major_version
+        fail_msg: >-
+          This compatibility branch supports Debian {{ supported_debian_major_version }} only.
+          Detected {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}.
+
+    - name: Validate required secrets
+      ansible.builtin.assert:
+        that:
+          - kivitendo_admin_password | length >= 20
+          - kivitendo_db_password | length >= 24
+          - kivitendo_master_key | length >= 32
+          - "'\n' not in kivitendo_admin_password and '\r' not in kivitendo_admin_password"
+          - "'\n' not in kivitendo_db_password and '\r' not in kivitendo_db_password"
+          - "'\n' not in kivitendo_master_key and '\r' not in kivitendo_master_key"
+          - kivitendo_admin_password not in ['admin123', 'changeme', '<set-with-ansible-vault>']
+          - kivitendo_db_password not in ['admin123', 'changeme', '<set-with-ansible-vault>']
+          - kivitendo_master_key not in ['admin123', 'changeme', '<set-with-ansible-vault>']
+        fail_msg: >-
+          Strong kivitendo_admin_password, kivitendo_db_password and
+          kivitendo_master_key values are required. Generate secrets.yml with
+          scripts/generate-secrets.sh and encrypt it with Ansible Vault.
+      no_log: true
+
+    - name: Validate Basic Authentication settings
+      ansible.builtin.assert:
+        that:
+          - basic_auth.user | length > 0
+          - basic_auth.password | length >= 16
+          - basic_auth.password not in ['changeme', 'password', '<set-with-ansible-vault>']
+        fail_msg: >-
+          HTTP Basic Authentication requires a non-empty user and a password of
+          at least 16 characters. Generate it with --include-basic-auth.
+      when: use_basic_auth | bool
+      no_log: true
+
+    - name: Validate TLS certificate policy
+      ansible.builtin.assert:
+        that:
+          - ssl.CertFile | length > 0
+          - ssl.CertKey | length > 0
+          - >-
+            allow_test_certificate | bool or
+            ('snakeoil' not in ssl.CertFile and 'snakeoil' not in ssl.CertKey)
+        fail_msg: >-
+          TLS is enabled but no production certificate has been configured.
+          Set ssl.CertFile and ssl.CertKey, or explicitly set
+          allow_test_certificate=true for an isolated test system.
+      when: install_SSL | bool
+
+  tasks:
+    - name: Update repos and install Debian 13 dependencies
       ansible.builtin.apt:
         name:
+          - acl
           - apache2
+          - ca-certificates
           - git
-          - libalgorithm-checkdigits-perl
           - libapache2-mod-fcgid
+          - libalgorithm-checkdigits-perl
           - libarchive-zip-perl
           - libauthen-sasl-perl
-          - libcam-pdf-perl
           - libcgi-pm-perl
           - libclone-perl
           - libconfig-std-perl
-          - libcrypt-pbkdf2-perl
           - libcryptx-perl
           - libdaemon-generic-perl
           - libdatetime-event-cron-perl
+          - libdatetime-format-strptime-perl
           - libdatetime-perl
           - libdatetime-set-perl
           - libdbd-pg-perl
           - libdbi-perl
+          - libdigest-sha-perl
           - libemail-address-perl
           - libemail-mime-perl
+          - libencode-imaputf7-perl
           - libexception-class-perl
           - libfcgi-perl
           - libfile-copy-recursive-perl
@@ -66,18 +147,22 @@
           - libfile-mimeinfo-perl
           - libfile-slurp-perl
           - libgd-gd2-perl
+          - libhtml-parser-perl
           - libhtml-restrict-perl
           - libimage-info-perl
           - libimager-perl
           - libimager-qrcode-perl
+          - libio-socket-ssl-perl
           - libipc-run-perl
           - libjson-perl
           - liblist-moreutils-perl
           - liblist-utilsby-perl
+          - libmail-imapclient-perl
           - libmath-round-perl
           - libnet-smtp-ssl-perl
           - libnet-sslglue-perl
           - libparams-validate-perl
+          - libparent-perl
           - libpbkdf2-tiny-perl
           - libpdf-api2-perl
           - libregexp-ipv6-perl
@@ -94,20 +179,20 @@
           - libtext-unidecode-perl
           - libtry-tiny-perl
           - liburi-perl
+          - libuuid-tiny-perl
           - libwww-perl
           - libxml-libxml-perl
           - libxml-writer-perl
+          - libyaml-libyaml-perl
           - libyaml-perl
           - poppler-utils
           - postgresql
           - postgresql-contrib
+          - python3
+          - python3-bcrypt
           - python3-passlib
+          - python3-psycopg2
           - ssl-cert
-          #- texlive-full
-          - libmail-imapclient-perl
-          - libencode-imaputf7-perl
-          - libuuid-tiny-perl
-
           - latexmk
           - texlive-binaries
           - texlive-fonts-recommended
@@ -117,79 +202,192 @@
           - texlive-latex-recommended
           - texlive-luatex
           - texlive-plain-generic
-
         state: present
         update_cache: true
-          
-  # install Kivi
-    - name: Ensure git is installed.
+        cache_valid_time: 3600
+
+    - name: Ensure PostgreSQL is enabled and running
+      ansible.builtin.service:
+        name: postgresql
+        state: started
+        enabled: true
+
+    - name: Read PostgreSQL password encryption setting
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --command
+          - SHOW password_encryption;
+      become_user: postgres
+      register: postgres_password_encryption
+      changed_when: false
+
+    - name: Enforce SCRAM password hashing in PostgreSQL
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --set
+          - ON_ERROR_STOP=1
+          - --command
+          - "ALTER SYSTEM SET password_encryption = 'scram-sha-256';"
+      become_user: postgres
+      when: postgres_password_encryption.stdout | trim != 'scram-sha-256'
+      notify: Reload postgresql
+
+    - name: Apply PostgreSQL encryption setting before creating the application role
+      ansible.builtin.meta: flush_handlers
+
+    - name: Create restricted kivitendo PostgreSQL role
+      community.postgresql.postgresql_user:
+        name: "{{ kivitendo_db_user }}"
+        password: "{{ kivitendo_db_password }}"
+        role_attr_flags: LOGIN,CREATEDB,NOSUPERUSER,NOCREATEROLE,NOREPLICATION
+        encrypted: true
+        state: present
+      become_user: postgres
+      no_log: true
+
+    - name: Discover PostgreSQL HBA file
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --tuples-only
+          - --no-align
+          - --command
+          - SHOW hba_file;
+      become_user: postgres
+      register: postgres_hba_file
+      changed_when: false
+
+    - name: Remove legacy localhost trust rule for PostgreSQL superuser
+      community.postgresql.postgresql_pg_hba:
+        dest: "{{ postgres_hba_file.stdout | trim }}"
+        contype: host
+        databases: all
+        users: postgres
+        address: 127.0.0.1/32
+        method: trust
+        state: absent
+        owner: postgres
+        group: postgres
+        mode: '0640'
+        backup: true
+        sort_rules: false
+      notify: Reload postgresql
+
+    - name: Configure SCRAM authentication for the kivitendo database role
+      community.postgresql.postgresql_pg_hba:
+        dest: "{{ postgres_hba_file.stdout | trim }}"
+        contype: "{{ item.contype }}"
+        databases: all
+        users: "{{ kivitendo_db_user }}"
+        address: "{{ item.address | default(omit) }}"
+        method: scram-sha-256
+        state: present
+        owner: postgres
+        group: postgres
+        mode: '0640'
+        sort_rules: true
+      loop:
+        - contype: local
+        - contype: host
+          address: 127.0.0.1/32
+        - contype: host
+          address: ::1/128
+      notify: Reload postgresql
+
+    - name: Apply PostgreSQL HBA changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Ensure git is installed
       ansible.builtin.apt:
         name: git
         state: present
 
-    - name: Clone repo.
+    - name: Clone repo
       ansible.builtin.git:
-        dest:    /var/www/kivitendo-erp
-        repo:    "{{ customer.repo | default('https://github.com/kivitendo/kivitendo-erp.git') }}"
-        version: "{{ customer.version | default('release-4.0.0') }}"
+        dest: "{{ kivitendo_install_dir }}"
+        repo: "{{ (customer | default({})).repo | default(kivitendo_repo) }}"
+        version: "{{ (customer | default({})).version | default(kivitendo_version) }}"
+        force: false
 
-    - name: Copy over Kivitendo.conf.
+    - name: Copy upstream-compatible kivitendo.conf
       ansible.builtin.copy:
         src: config-files/kivitendo.conf
-        dest: /var/www/kivitendo-erp/config/kivitendo.conf
-        owner: www-data
-        mode: 'u=rw,g=rw,o='
+        dest: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: '0640'
       notify: Restart apache
 
-    - name: Make webdav directory.
+    - name: Configure kivitendo authentication database and secrets
+      community.general.ini_file:
+        path: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+        section: "{{ item.section }}"
+        option: "{{ item.option }}"
+        value: "{{ item.value }}"
+        no_extra_spaces: false
+        backup: false
+      loop:
+        - section: authentication
+          option: admin_password
+          value: "{{ kivitendo_admin_password }}"
+        - section: authentication/database
+          option: host
+          value: "{{ kivitendo_db_host }}"
+        - section: authentication/database
+          option: port
+          value: "{{ kivitendo_db_port }}"
+        - section: authentication/database
+          option: db
+          value: "{{ kivitendo_db_name }}"
+        - section: authentication/database
+          option: user
+          value: "{{ kivitendo_db_user }}"
+        - section: authentication/database
+          option: password
+          value: "{{ kivitendo_db_password }}"
+        - section: secrets
+          option: master_key
+          value: "{{ kivitendo_master_key }}"
+      no_log: true
+      notify: Restart apache
+
+    - name: Make webdav directory
       ansible.builtin.file:
-        path: /var/www/kivitendo-erp/webdav
+        path: "{{ kivitendo_install_dir }}/webdav"
         state: directory
-        mode:  'u=Xrw,g=Xrw,o='
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        mode: '0770'
 
-
-    - name: Make kivi_documents directory.
+    - name: Make kivi_documents directory
       ansible.builtin.file:
-        path: /var/www/kivitendo-erp/kivi_documents
+        path: "{{ kivitendo_document_dir }}"
         state: directory
-        mode:  'u=Xrw,g=Xrw,o='
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        mode: '0770'
 
-    - name: Change permissions.
+    - name: Change writable kivitendo directory permissions
       ansible.builtin.file:
-        owner:   www-data
-        path:    "/var/www/kivitendo-erp/{{ item }}"
-        mode:    'u=Xrw,g=Xrw,o='
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        path: "{{ kivitendo_install_dir }}/{{ item }}"
+        mode: 'u=Xrw,g=Xrw,o='
         recurse: true
       loop:
-        - kivi_documents
         - users
         - spool
         - templates
         - webdav
 
-  #  postrgesql for kivi
-    - name: Remove existing rules to ensure correct ordering of the rules
-      ansible.builtin.postgresql_pg_hba:
-        dest:      /etc/postgresql/17/main/pg_hba.conf
-        overwrite: true
-        contype:   local
-        users:     all
-        databases: all
-        method:    peer
-
-    - name: Allow access from localhost to Postgresql.
-      ansible.builtin.postgresql_pg_hba:
-        dest:      /etc/postgresql/17/main/pg_hba.conf
-        contype:   host
-        users:     postgres
-        databases: all
-        address:   127.0.0.1/32
-        method:    trust
-      notify: Restart postgresql
-
-
-  # apache server for kivi
-    - name: Activate apache fastcgi and headers modules.
+    - name: Activate apache fastcgi and headers modules
       community.general.apache2_module:
         state: present
         name: "{{ item }}"
@@ -197,9 +395,9 @@
         - fcgid
         - headers
       notify: Restart apache
-      when: not customer.installssl
+      when: not install_SSL | bool
 
-    - name: Activate apache fastcgi, headers and ssl modules.
+    - name: Activate apache fastcgi, headers and ssl modules
       community.general.apache2_module:
         state: present
         name: "{{ item }}"
@@ -210,51 +408,102 @@
         - rewrite
         - socache_shmcb
       notify: Enable SSL
-      when: customer.installssl
+      when: install_SSL | bool
 
-    - name: Add a user to a password file suitable for use by libpam-pwdfile
+    - name: Add a user to the Apache password file
       community.general.htpasswd:
         path: /etc/apache2/.htpasswd
         name: "{{ basic_auth.user }}"
         password: "{{ basic_auth.password }}"
-      when: use_basic_auth
+        owner: root
+        group: www-data
+        mode: '0640'
+      when: use_basic_auth | bool
+      no_log: true
 
-    - name: Copy over apache config files.
+    - name: Copy over non-TLS Apache config file
       ansible.builtin.template:
         src: config-files/apache/no-ssl/000-default.conf
         dest: /etc/apache2/sites-available/000-default.conf
-        mode: '640'
+        owner: root
+        group: root
+        mode: '0644'
       notify: Restart apache
-      when: not customer.installssl
+      when: not install_SSL | bool
 
-    - name: Copy over apache config files.
+    - name: Copy over TLS Apache config file
       ansible.builtin.template:
-        src: "config-files/apache/ssl/{{ item }}"
-        dest: "/etc/apache2/sites-available/{{ item }}"
-        mode: '640'
-      loop:
-        - default-ssl.conf
+        src: config-files/apache/ssl/default-ssl.conf
+        dest: /etc/apache2/sites-available/default-ssl.conf
+        owner: root
+        group: root
+        mode: '0644'
       notify: Restart apache
-      when: customer.installssl
-    
-    - name: Disable 000-default.conf
-      shell: a2dissite 000-default.conf
-      when: customer.installssl
+      when: install_SSL | bool
+
+    - name: Disable 000-default.conf when TLS is enabled
+      ansible.builtin.command:
+        argv:
+          - a2dissite
+          - 000-default.conf
+      register: disable_default_site
+      changed_when: "'Site 000-default disabled' in disable_default_site.stdout"
+      when: install_SSL | bool
+      notify: Restart apache
+
+    - name: Validate Apache configuration
+      ansible.builtin.command:
+        argv:
+          - apache2ctl
+          - configtest
+      changed_when: false
 
     - name: Install kivitendo-task-server
-      when: kivi_backup
+      when: kivi_backup | bool
       ansible.builtin.copy:
         src: config-files/kivitendo-task-server.service
         dest: /etc/systemd/system/kivitendo-task-server.service
         owner: root
-        mode: 'u=rw,g=rw,o='
+        group: root
+        mode: '0644'
       notify: systemd_daemon_reload
 
+    - name: Apply systemd unit changes
+      ansible.builtin.meta: flush_handlers
+
     - name: Start kivitendo-task-server
-      when: kivi_backup
+      when: kivi_backup | bool
       ansible.builtin.systemd:
         name: kivitendo-task-server
         state: started
         enabled: true
+
+    - name: Verify kivitendo database authentication
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --host
+          - "{{ kivitendo_db_host }}"
+          - --port
+          - "{{ kivitendo_db_port }}"
+          - --username
+          - "{{ kivitendo_db_user }}"
+          - --dbname
+          - postgres
+          - --command
+          - SELECT 1;
+      environment:
+        PGPASSWORD: "{{ kivitendo_db_password }}"
+      register: kivitendo_db_authentication
+      changed_when: false
+      no_log: true
+
+    - name: Require successful kivitendo database authentication
+      ansible.builtin.assert:
+        that:
+          - kivitendo_db_authentication.rc == 0
+        fail_msg: Dedicated kivitendo PostgreSQL authentication failed.
+      no_log: true
 
 # vim: set ft=yaml.ansible
