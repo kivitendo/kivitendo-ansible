@@ -39,6 +39,9 @@ kivitendo_fcgid_io_timeout: 600
 ssl:
   cert_file: "/etc/ssl/certs/ssl-cert-snakeoil.pem"
   cert_key: "/etc/ssl/private/ssl-cert-snakeoil.key"
+  allowed_key_groups:
+    - root
+    - ssl-cert
 
 # Optional additional HTTP Basic Authentication. It is deliberately disabled by
 # default and may only be enabled together with TLS.
