@@ -31,15 +31,18 @@ def main() -> None:
     playbook = read("main.yml")
     variables = yaml.safe_load(read("vars.yml"))
     readme = read("README.md")
-    vagrant = read("Vagrantfile")
+    gitignore = read(".gitignore")
+    bootstrap = read("scripts/bootstrap-debian-controller.sh")
+    secret_generator = read("scripts/New-KivitendoSecrets.ps1")
     http = read("config-files/apache/no-ssl/000-default.conf")
     https = read("config-files/apache/ssl/default-ssl.conf")
     operational_paths = [
         ROOT / "main.yml",
         ROOT / "vars.yml",
         ROOT / "README.md",
-        ROOT / "Vagrantfile",
         ROOT / "inventory",
+        ROOT / "scripts/bootstrap-debian-controller.sh",
+        ROOT / "scripts/New-KivitendoSecrets.ps1",
         ROOT / "config-files/apache/no-ssl/000-default.conf",
         ROOT / "config-files/apache/ssl/default-ssl.conf",
         ROOT / "config-files/kivitendo-task-server.service",
@@ -52,18 +55,63 @@ def main() -> None:
         r"^\s*DocumentRoot\s+\{\{\s*kivitendo_install_dir\s*\}\}\s*$", re.MULTILINE
     )
 
+    required_controller_packages = {
+        "ca-certificates",
+        "git",
+        "openssh-client",
+        "python3",
+        "python3-venv",
+    }
+
     checks = {
-        "Raw bootstrap rejects non-Debian 13 before mutation": (
+        "Raw target bootstrap rejects non-Debian 13 before mutation": (
             'test "${VERSION_ID%%.*}" = "{{ supported_debian_major_version }}"' in playbook
             and playbook.index('test "${VERSION_ID%%.*}"') < playbook.index("apt-get update")
         ),
         "Debian 13 only": (
             variables["supported_debian_major_version"] == "13"
             and "Ubuntu 22.04" not in readme
-            and "ubuntu2204" not in vagrant
+            and '[[ "${DEBIAN_MAJOR_VERSION}" == "13" ]]' in bootstrap
         ),
-        "Verified Debian 13 Vagrant box": (
-            "bento/debian-13" in vagrant and "generic/debian13" not in vagrant
+        "No Vagrant artifacts": (
+            not (ROOT / "Vagrantfile").exists()
+            and "vagrant" not in readme.lower()
+            and ".vagrant/" not in gitignore
+        ),
+        "Controller bootstrap rejects unsupported OS before APT mutation": (
+            bootstrap.index('[[ "${ID:-}" == "debian" ]]') < bootstrap.index("apt-get update")
+            and bootstrap.index('[[ "${DEBIAN_MAJOR_VERSION}" == "13" ]]')
+            < bootstrap.index("apt-get update")
+        ),
+        "Minimal controller package set declared": all(
+            package in bootstrap for package in required_controller_packages
+        ),
+        "Controller bootstrap installs pinned Ansible dependencies": (
+            "python3 -m venv" in bootstrap
+            and "requirements.txt" in bootstrap
+            and "ansible-galaxy" in bootstrap
+            and "requirements.yml" in bootstrap
+        ),
+        "PowerShell generator uses cryptographic RNG": (
+            "System.Security.Cryptography.RandomNumberGenerator" in secret_generator
+            and "Get-Random" not in secret_generator
+            and "Rejection sampling avoids modulo bias" in secret_generator
+        ),
+        "PowerShell generator creates every required application secret": all(
+            secret_name in secret_generator
+            for secret_name in (
+                "kivitendo_admin_password",
+                "kivitendo_db_password",
+                "kivitendo_master_key",
+            )
+        ),
+        "PowerShell generator hardens secret-file access": (
+            "SetAccessRuleProtection($true, $false)" in secret_generator
+            and "chmod" in secret_generator
+            and "600" in secret_generator
+        ),
+        "PowerShell generator does not overwrite secrets by default": (
+            "already exists. Use -Force to replace it intentionally." in secret_generator
         ),
         "Latest upstream exact pin": (
             variables["kivitendo_version"]
