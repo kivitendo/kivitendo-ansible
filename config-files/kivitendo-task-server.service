@@ -6,11 +6,11 @@ Wants=network-online.target
 
 [Service]
 Type=forking
-User={{ kivitendo_web_user }}
-Group={{ kivitendo_web_group }}
-WorkingDirectory={{ kivitendo_install_dir }}
-ExecStart={{ kivitendo_install_dir }}/scripts/task_server.pl start
-ExecStop={{ kivitendo_install_dir }}/scripts/task_server.pl stop
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/kivitendo-erp
+ExecStart=/var/www/kivitendo-erp/scripts/task_server.pl start
+ExecStop=/var/www/kivitendo-erp/scripts/task_server.pl stop
 Restart=on-failure
 RestartSec=5s
 UMask=0027
