@@ -13,7 +13,7 @@ unless missing.empty?
 end
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "generic/debian13"
+  config.vm.box = "bento/debian-13"
   config.vm.network "forwarded_port", guest: 80, host: 8080, host_ip: "127.0.0.1"
   config.vm.network "forwarded_port", guest: 443, host: 8443, host_ip: "127.0.0.1"
 
