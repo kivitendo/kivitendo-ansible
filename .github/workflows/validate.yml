@@ -1,0 +1,64 @@
+---
+name: Validate Debian 13 playbook
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:13
+
+    steps:
+      - name: Install minimal validation prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            git \
+            python3 \
+            python3-venv \
+            ruby
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out exact workflow revision without third-party actions
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION_REF: ${{ github.ref }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+            fetch --depth=1 origin "${REVISION_REF}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Install pinned Ansible dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          .venv/bin/pip install --disable-pip-version-check -r requirements.txt
+          .venv/bin/ansible-galaxy collection install -r requirements.yml
+
+      - name: Run static security validation
+        shell: bash
+        run: .venv/bin/python tests/validate_static.py
+
+      - name: Validate Ansible syntax
+        shell: bash
+        run: .venv/bin/ansible-playbook --syntax-check -i inventory main.yml
+
+      - name: Validate Vagrantfile Ruby syntax
+        shell: bash
+        run: ruby -c Vagrantfile
