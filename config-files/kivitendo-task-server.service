@@ -1,19 +1,27 @@
 [Unit]
-Description=kivitendo background jobs server
+Description=kivitendo background job server
 Requires=postgresql.service
-After=postgresql.service
+After=network-online.target postgresql.service
+Wants=network-online.target
 
 [Service]
 Type=forking
-# Change the user to the one your web server runs as.
-User=www-data
-# Change these two to point to the kivitendo "task_server.pl" location.
-ExecStart=/var/www/kivitendo-erp/scripts/task_server.pl start
-ExecStop=/var/www/kivitendo-erp/scripts/task_server.pl stop
-Restart=always
+User={{ kivitendo_web_user }}
+Group={{ kivitendo_web_group }}
+WorkingDirectory={{ kivitendo_install_dir }}
+ExecStart={{ kivitendo_install_dir }}/scripts/task_server.pl start
+ExecStop={{ kivitendo_install_dir }}/scripts/task_server.pl stop
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
 ProtectSystem=full
-ProtectHome=yes
-PrivateTmp=yes
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target
