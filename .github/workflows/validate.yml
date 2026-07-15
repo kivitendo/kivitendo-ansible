@@ -42,13 +42,61 @@ jobs:
             fetch --depth=1 origin "${REVISION_REF}"
           git checkout --detach FETCH_HEAD
 
-      - name: Validate bootstrap shell syntax
+      - name: Validate bootstrap and secret-generator shell syntax
         shell: bash
-        run: bash -n scripts/bootstrap-debian-controller.sh
+        run: |
+          set -euo pipefail
+          bash -n scripts/bootstrap-debian-controller.sh
+          bash -n scripts/generate-secrets.sh
 
       - name: Bootstrap minimal Debian Ansible controller
         shell: bash
         run: bash scripts/bootstrap-debian-controller.sh
+
+      - name: Generate and validate Debian secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_dir="$(mktemp -d)"
+          trap 'rm -rf -- "${test_dir}"' EXIT
+          output_path="${test_dir}/secrets.yml"
+
+          bash scripts/generate-secrets.sh --output "${output_path}"
+
+          test "$(stat -c '%a' "${output_path}")" = "600"
+
+          .venv/bin/python - "${output_path}" <<'PYTHON'
+          import re
+          import sys
+          from pathlib import Path
+
+          content = Path(sys.argv[1]).read_text(encoding="utf-8")
+          expected_lengths = {
+              "kivitendo_admin_password": 32,
+              "kivitendo_db_password": 40,
+              "kivitendo_master_key": 64,
+          }
+
+          for name, expected_length in expected_lengths.items():
+              match = re.search(rf"^{name}: '([A-Za-z0-9]+)'$", content, re.MULTILINE)
+              if match is None:
+                  raise AssertionError(f"Missing or malformed generated secret: {name}")
+              if len(match.group(1)) != expected_length:
+                  raise AssertionError(f"Unexpected generated length for {name}")
+          PYTHON
+
+          if bash scripts/generate-secrets.sh --output "${output_path}"; then
+            echo "Secret generator overwrote an existing file without --force." >&2
+            exit 1
+          fi
+
+          basic_auth_path="${test_dir}/basic-auth.yml"
+          bash scripts/generate-secrets.sh \
+            --output "${basic_auth_path}" \
+            --include-basic-auth \
+            --basic-auth-user "ci-user"
+          grep -q '^basic_auth:$' "${basic_auth_path}"
+          grep -q "^  user: 'ci-user'$" "${basic_auth_path}"
 
       - name: Run static security validation
         shell: bash
