@@ -42,17 +42,20 @@ jobs:
             fetch --depth=1 origin "${REVISION_REF}"
           git checkout --detach FETCH_HEAD
 
-      - name: Validate bootstrap, secret generator and CSV helper syntax
+      - name: Validate bootstrap and secret-generator shell syntax
         shell: bash
         run: |
           set -euo pipefail
           bash -n scripts/bootstrap-debian-controller.sh
           bash -n scripts/generate-secrets.sh
-          python3 -m py_compile scripts/normalize-kivitendo-csv.py
 
       - name: Bootstrap minimal Debian Ansible controller
         shell: bash
         run: bash scripts/bootstrap-debian-controller.sh
+
+      - name: Validate CSV helper Python syntax
+        shell: bash
+        run: .venv/bin/python -m py_compile scripts/normalize-kivitendo-csv.py
 
       - name: Generate and validate Debian secrets
         shell: bash
