@@ -1,5 +1,5 @@
 [Unit]
-Description=kivitendo background job server
+Description=kivitendo background jobs server
 Requires=postgresql.service
 After=network-online.target postgresql.service
 Wants=network-online.target
@@ -11,8 +11,9 @@ Group={{ kivitendo_web_group }}
 WorkingDirectory={{ kivitendo_install_dir }}
 ExecStart={{ kivitendo_install_dir }}/scripts/task_server.pl start
 ExecStop={{ kivitendo_install_dir }}/scripts/task_server.pl stop
-Restart=on-failure
-RestartSec=5s
+ExecReload={{ kivitendo_install_dir }}/scripts/task_server.pl restart
+Restart=always
+RestartSec=10s
 UMask=0027
 NoNewPrivileges=true
 PrivateTmp=true
