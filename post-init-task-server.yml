@@ -1,0 +1,98 @@
+---
+- name: Enable and verify kivitendo task server after application initialization
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Configure kivitendo task server runtime user
+      community.general.ini_file:
+        path: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+        section: task_server
+        option: "{{ item.option }}"
+        value: "{{ item.value }}"
+        no_extra_spaces: true
+        owner: root
+        group: "{{ kivitendo_web_group }}"
+        mode: '0640'
+      loop:
+        - option: debug
+          value: '0'
+        - option: run_as
+          value: "{{ kivitendo_web_user }}"
+
+    - name: Ensure kivitendo task server writable runtime directories are owned by web user
+      ansible.builtin.file:
+        path: "{{ kivitendo_install_dir }}/{{ item }}"
+        state: directory
+        owner: "{{ kivitendo_web_user }}"
+        group: "{{ kivitendo_web_group }}"
+        mode: 'u=rwX,g=rwX,o='
+        recurse: true
+      loop:
+        - users
+        - spool
+        - webdav
+
+    - name: Install kivitendo task server systemd service
+      ansible.builtin.template:
+        src: config-files/kivitendo-task-server.service
+        dest: /etc/systemd/system/kivitendo-task-server.service
+        owner: root
+        group: root
+        mode: '0644'
+      register: kivitendo_task_server_unit
+
+    - name: Reload systemd after task server unit changes
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: kivitendo_task_server_unit.changed
+
+    - name: Enable and start kivitendo task server
+      ansible.builtin.systemd_service:
+        name: kivitendo-task-server.service
+        state: started
+        enabled: true
+
+    - name: Verify kivitendo task server service is active
+      ansible.builtin.systemd_service:
+        name: kivitendo-task-server.service
+      register: kivitendo_task_server_service
+
+    - name: Require active kivitendo task server service
+      ansible.builtin.assert:
+        that:
+          - kivitendo_task_server_service.status.ActiveState == 'active'
+          - kivitendo_task_server_service.status.SubState == 'running'
+        fail_msg: >-
+          kivitendo-task-server.service is not active/running. Check
+          journalctl -u kivitendo-task-server.service -n 150 --no-pager.
+
+    - name: Verify task_server.pl reports a running daemon
+      ansible.builtin.command:
+        argv:
+          - "{{ kivitendo_install_dir }}/scripts/task_server.pl"
+          - status
+        chdir: "{{ kivitendo_install_dir }}"
+      become_user: "{{ kivitendo_web_user }}"
+      register: kivitendo_task_server_status
+      changed_when: false
+
+    - name: Require task_server.pl running status
+      ansible.builtin.assert:
+        that:
+          - "'kivitendo-background-jobs running' in kivitendo_task_server_status.stdout"
+        fail_msg: >-
+          task_server.pl did not report a running kivitendo-background-jobs daemon.
+          Output was: {{ kivitendo_task_server_status.stdout | default('') }}
+
+    - name: Show remaining manual mandator/client configuration step
+      ansible.builtin.debug:
+        msg: >-
+          Server-side task server setup is complete. In the kivitendo web UI,
+          open Administration -> Mandantenverwaltung -> Mandant bearbeiten and set
+          'Task-Server für diesen Mandanten mit der folgenden BenutzerIn ausführen'
+          to a kivitendo application user. This is not the Linux www-data user.
