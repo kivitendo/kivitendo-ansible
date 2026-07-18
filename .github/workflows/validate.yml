@@ -53,6 +53,10 @@ jobs:
         shell: bash
         run: bash scripts/bootstrap-debian-controller.sh
 
+      - name: Validate CSV helper Python syntax
+        shell: bash
+        run: .venv/bin/python -m py_compile scripts/normalize-kivitendo-csv.py
+
       - name: Generate and validate Debian secrets
         shell: bash
         run: |
@@ -98,13 +102,48 @@ jobs:
           grep -q '^basic_auth:$' "${basic_auth_path}"
           grep -q "^  user: 'ci-user'$" "${basic_auth_path}"
 
+      - name: Normalize and validate kivitendo CSV import files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_dir="$(mktemp -d)"
+          trap 'rm -rf -- "${test_dir}"' EXIT
+          output_path="${test_dir}/kivitendo-article-import-safe.csv"
+
+          .venv/bin/python scripts/normalize-kivitendo-csv.py \
+            tests/fixtures/kivitendo-article-import.csv \
+            "${output_path}"
+
+          .venv/bin/python - "${output_path}" <<'PYTHON'
+          import csv
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          content = path.read_text(encoding="utf-8")
+          if '"' in content:
+              raise AssertionError("Normalized CSV must not contain double quotes")
+
+          with path.open("r", encoding="utf-8", newline="") as handle:
+              rows = list(csv.reader(handle, delimiter=";", quotechar='"', strict=True))
+
+          if len(rows) != 2:
+              raise AssertionError(f"Expected header plus one data row, got {len(rows)} rows")
+          if any(len(row) != 7 for row in rows):
+              raise AssertionError(f"Expected 7 columns per row, got {[len(row) for row in rows]}")
+          if ";" in rows[1][6] or '"' in rows[1][6]:
+              raise AssertionError("Long description was not normalized safely")
+          PYTHON
+
       - name: Run static security validation
         shell: bash
         run: .venv/bin/python tests/validate_static.py
 
       - name: Validate Ansible syntax
         shell: bash
-        run: .venv/bin/ansible-playbook --syntax-check -i inventory main.yml
+        run: |
+          .venv/bin/ansible-playbook --syntax-check -i inventory main.yml
+          .venv/bin/ansible-playbook --syntax-check -i inventory post-init-task-server.yml
 
   validate-powershell:
     runs-on: windows-latest
