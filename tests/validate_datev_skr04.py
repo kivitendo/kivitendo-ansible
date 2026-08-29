@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Structural fail-closed checks for the parallel kivitendo SKR04 workflow."""
+"""Static fail-closed contract for the parallel kivitendo SKR04 workflow."""
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Callable
@@ -15,7 +16,11 @@ YAML_FILES = (
     "datev-skr04.local.example.yml",
     "datev-skr04-migration.yml",
     "tasks/datev_skr04/preflight.yml",
+    "tasks/datev_skr04/strict_environment.yml",
+    "tasks/datev_skr04/auth_baseline.yml",
     "tasks/datev_skr04/snapshot.yml",
+    "tasks/datev_skr04/finalize_snapshot_manifest.yml",
+    "tasks/datev_skr04/pre_create_integrity.yml",
     "tasks/datev_skr04/create.yml",
     "tasks/datev_skr04/register.yml",
     "tasks/datev_skr04/verify.yml",
@@ -33,28 +38,38 @@ FORBIDDEN_FILES = (
 )
 
 
-def read(path: str) -> str:
-    return (ROOT / path).read_text(encoding="utf-8")
+def read(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def contains(text: str, *tokens: str) -> bool:
+def has(text: str, *tokens: str) -> bool:
     return all(token in text for token in tokens)
+
+
+def before(text: str, first: str, second: str) -> bool:
+    first_pos = text.find(first)
+    second_pos = text.find(second)
+    return first_pos >= 0 and second_pos >= 0 and first_pos < second_pos
 
 
 def main() -> int:
     checks: list[tuple[str, Callable[[], bool]]] = []
 
-    for path in TEXT_FILES:
-        checks.append((f"required file exists: {path}", (ROOT / path).is_file))
-    for path in FORBIDDEN_FILES:
-        checks.append((f"destructive rollback file absent: {path}", lambda path=path: not (ROOT / path).exists()))
-    for path in YAML_FILES:
-        checks.append((f"valid YAML: {path}", lambda path=path: yaml.safe_load(read(path)) is not None))
+    for relative in TEXT_FILES:
+        checks.append((f"required file exists: {relative}", (ROOT / relative).is_file))
+    for relative in FORBIDDEN_FILES:
+        checks.append((f"destructive rollback file absent: {relative}", lambda relative=relative: not (ROOT / relative).exists()))
+    for relative in YAML_FILES:
+        checks.append((f"valid YAML: {relative}", lambda relative=relative: yaml.safe_load(read(relative)) is not None))
 
     defaults = read("datev-skr04-defaults.yml")
     playbook = read("datev-skr04-migration.yml")
     preflight = read("tasks/datev_skr04/preflight.yml")
+    strict = read("tasks/datev_skr04/strict_environment.yml")
+    auth_baseline = read("tasks/datev_skr04/auth_baseline.yml")
     snapshot = read("tasks/datev_skr04/snapshot.yml")
+    finalize_manifest = read("tasks/datev_skr04/finalize_snapshot_manifest.yml")
+    pre_create = read("tasks/datev_skr04/pre_create_integrity.yml")
     create = read("tasks/datev_skr04/create.yml")
     register = read("tasks/datev_skr04/register.yml")
     verify = read("tasks/datev_skr04/verify.yml")
@@ -63,7 +78,7 @@ def main() -> int:
     workflow = read(".github/workflows/validate-datev-skr04.yml")
     gitignore = read(".gitignore")
     docs = read("docs/DATEV_SKR04_MIGRATION.md")
-    aggregate = "\n".join(read(path) for path in TEXT_FILES)
+    aggregate = "\n".join(read(relative) for relative in TEXT_FILES)
 
     business_tokens = (
         "customer_count",
@@ -95,16 +110,17 @@ def main() -> int:
         "delivery_order_items_digest",
         "invoice_item_digest",
         "bank_transactions_digest",
+        "defaults_rows",
         "defaults_digest",
     )
 
     checks.extend(
         [
-            ("private local files ignored", lambda: contains(gitignore, "datev-skr04.local.yml", "datev-migration.local.yml")),
-            ("preflight is default", lambda: "datev_skr04_mode: preflight" in defaults),
+            ("private operator files are ignored", lambda: has(gitignore, "datev-skr04.local.yml", "datev-migration.local.yml")),
+            ("preflight is the default", lambda: "datev_skr04_mode: preflight" in defaults),
             (
-                "source and target are strict and distinct",
-                lambda: contains(
+                "source and target identifiers are strict and distinct",
+                lambda: has(
                     preflight,
                     "datev_skr04_source_db != datev_skr04_target_db",
                     "datev_skr04_source_db is match('^[a-z][a-z0-9_]{2,62}$')",
@@ -114,66 +130,86 @@ def main() -> int:
                 ),
             ),
             (
-                "apply is confirmation and fingerprint bound",
-                lambda: contains(
-                    defaults,
-                    "CREATE_PARALLEL_SKR04_DATASET",
-                )
-                and contains(
+                "approved short fiscal year is pinned exactly",
+                lambda: has(strict, "datev_skr04_closed_to == '2026-07-12'", "datev_skr04_fiscal_year_start == '2026-07-13'"),
+            ),
+            (
+                "apply is explicitly confirmation and fingerprint bound",
+                lambda: "CREATE_PARALLEL_SKR04_DATASET" in defaults
+                and has(
                     preflight,
                     "datev_skr04_apply_confirmation == datev_skr04_apply_token",
                     "datev_skr04_expected_source_fingerprint == datev_skr04_source_fingerprint_actual",
                 ),
             ),
             (
-                "execution is production-local",
-                lambda: contains(
+                "execution and source auth identity are bound to one local PostgreSQL endpoint",
+                lambda: has(
                     preflight,
                     "(ansible_connection | default('')) == 'local'",
                     "inventory_hostname in ['localhost', '127.0.0.1']",
                     "datev_skr04_db_host == '127.0.0.1'",
                     "current_setting('port')::integer AS local_port",
-                    "local_port | int == datev_skr04_db_port | int",
-                ),
+                )
+                and has(strict, ".dbhost == datev_skr04_db_host", ".dbport | string == datev_skr04_db_port | string", ".dbuser == datev_skr04_db_user"),
             ),
             (
-                "mandatory recovery evidence cannot be disabled",
-                lambda: contains(defaults, "datev_skr04_backup_documents: true", "datev_skr04_quiesce_source: true")
-                and contains(
-                    preflight,
-                    "datev_skr04_backup_documents | bool",
-                    "datev_skr04_quiesce_source | bool",
-                    "kivitendo_install_dir == '/var/www/kivitendo-erp'",
-                    "kivitendo_document_dir == '/var/lib/kivitendo/documents'",
-                ),
-            ),
-            (
-                "managed paths reject symlinks and occupied sidecar paths",
-                lambda: contains(
-                    preflight,
+                "installed creation inputs are real pinned unchanged files",
+                lambda: has(
+                    strict,
                     "follow: false",
-                    "datev_skr04_existing_sidecar_contract.stat.exists",
-                    "datev_skr04_existing_sidecar_contract.stat.islnk",
-                ),
-            ),
-            ("source fingerprint covers every core domain", lambda: contains(fingerprint, *fingerprint_tokens)),
-            (
-                "snapshot precedes create register and verify",
-                lambda: playbook.find("snapshot.yml") < playbook.find("create.yml") < playbook.find("register.yml") < playbook.find("verify.yml"),
-            ),
-            (
-                "backup run directory is new and non-symlinked",
-                lambda: contains(
-                    snapshot,
-                    "datev_skr04_snapshot_directory_states.results[2].stat.exists",
-                    "datev_skr04_snapshot_directory_states.results[2].stat.islnk",
-                    "Create the unique protected migration backup directory",
+                    "not (datev_skr04_install_root_state.stat.islnk",
+                    "datev_skr04_installed_integrity_commands.results[0].stdout == kivitendo_version",
+                    "HEAD:SL/User.pm",
+                    "HEAD:sql/{{ datev_skr04_target_coa }}-chart.sql",
+                    "datev_skr04_live_user_pm_sha256",
+                    "datev_skr04_live_skr04_chart_sha256",
+                )
+                and has(
+                    pre_create,
+                    "datev_skr04_live_user_pm_sha256",
+                    "datev_skr04_live_skr04_chart_sha256",
+                    "datev_skr04_installed_revision_before_create.stdout == kivitendo_version",
                 ),
             ),
             (
-                "database and filesystem snapshots are complete",
+                "source defaults state is unambiguous and fully fingerprinted",
+                lambda: has(strict, "SELECT count(*)::bigint AS defaults_rows FROM defaults", "defaults_rows | int == 1")
+                and has(fingerprint, *fingerprint_tokens)
+                and "ORDER BY row_to_json(x)::text" in fingerprint
+                and not re.search(r"FROM\s+defaults\s+\w+\s+LIMIT\s+1", fingerprint, re.IGNORECASE),
+            ),
+            (
+                "persistent application role is LOGIN and CREATEDB only",
+                lambda: has(
+                    strict,
+                    "rolcanlogin",
+                    "rolcreatedb",
+                    "rolsuper",
+                    "rolcreaterole",
+                    "rolreplication",
+                    "rolbypassrls",
+                    "pg_auth_members",
+                    "granted_role_memberships | int == 0",
+                )
+                and has(pre_create, "rolcreaterole", "rolreplication", "rolbypassrls", "granted_role_memberships | int == 0")
+                and has(verify, "rolcreaterole", "rolreplication", "rolbypassrls", "granted_role_memberships | int == 0"),
+            ),
+            (
+                "source auth baseline covers identity and access mappings",
+                lambda: has(auth_baseline, "source_client_digest", "source_users_digest", "source_groups_digest"),
+            ),
+            (
+                "snapshot precedes every target operation",
+                lambda: before(playbook, "snapshot.yml", "pre_create_integrity.yml")
+                and before(playbook, "pre_create_integrity.yml", "create.yml")
+                and before(playbook, "create.yml", "register.yml")
+                and before(playbook, "register.yml", "verify.yml"),
+            ),
+            (
+                "mandatory database and filesystem snapshots are complete",
                 lambda: snapshot.count("--format=custom") == 2
-                and contains(
+                and has(
                     snapshot,
                     "source-{{ datev_skr04_source_db }}.dump",
                     "auth-{{ datev_skr04_auth_db }}.dump",
@@ -181,13 +217,6 @@ def main() -> int:
                     "kivitendo-documents.tar.gz",
                     "kivitendo-git-state.txt",
                     "kivitendo-local-changes.patch",
-                ),
-            ),
-            (
-                "all snapshot classes are SHA-256 verified",
-                lambda: snapshot.count("checksum_algorithm: sha256") == 2
-                and contains(
-                    snapshot,
                     "source_dump_sha256",
                     "auth_dump_sha256",
                     "kivitendo_installation_archive_sha256",
@@ -195,8 +224,35 @@ def main() -> int:
                 ),
             ),
             (
-                "write-capable services are restored from always",
-                lambda: contains(
+                "snapshot manifest carries an actual validated timestamp",
+                lambda: has(
+                    finalize_manifest,
+                    "date --utc",
+                    "+%Y-%m-%dT%H:%M:%SZ",
+                    "evidence_finalized_at",
+                    "to_nice_yaml",
+                    "from_yaml",
+                )
+                and before(playbook, "finalize_snapshot_manifest.yml", "datev_skr04_snapshot_gate_paths"),
+            ),
+            (
+                "snapshot-complete proof gates all target operations",
+                lambda: has(
+                    playbook,
+                    "datev_skr04_snapshot_gate_paths",
+                    "checksum_algorithm: sha256",
+                    "datev_skr04_snapshot_gate_manifest_payload",
+                    "datev_skr04_snapshot_complete",
+                    "Run target-only operations after the snapshot-complete gate",
+                )
+                and all(
+                    not re.search(rf"(?m)^\s*-\s+{tag}\s*$", playbook)
+                    for tag in ("snapshot", "create", "register", "verify")
+                ),
+            ),
+            (
+                "write-capable services are restored from an always block",
+                lambda: has(
                     snapshot,
                     "Stop Apache",
                     "Stop the dedicated kivitendo FCGI service",
@@ -208,141 +264,116 @@ def main() -> int:
                 ),
             ),
             (
-                "reviewed helper is checksum-bound and run directly",
-                lambda: contains(preflight, "datev_skr04_helper_source", "checksum_algorithm: sha256")
-                and contains(
-                    create,
-                    "datev_skr04_helper_before_execution.stat.checksum == datev_skr04_helper_source.stat.checksum",
-                    "{{ playbook_dir }}/scripts/kivitendo-create-dataset.pl",
-                )
-                and "datev_skr04_helper_install_path" not in aggregate,
-            ),
-            (
-                "native initializer marks only an absent target",
-                lambda: contains(
-                    helper,
-                    "User->new->dbcreate",
-                    "$::request = SL::Request->new",
-                    "Target database already exists",
-                    "CREATE DATABASE $quoted_target",
-                    "datev_skr04_migration_marker",
-                    "KIVITENDO_SOURCE_DB",
-                    "KIVITENDO_TARGET_DB",
-                ),
+                "native initializer alone creates the absent target and then marks it",
+                lambda: has(helper, "Target database already exists", "User->new->dbcreate", "datev_skr04_migration_marker")
+                and before(helper, "Target database already exists", "User->new->dbcreate")
+                and before(helper, "User->new->dbcreate", "CREATE TABLE datev_skr04_migration_marker")
+                and "CREATE DATABASE $quoted_target" not in helper,
             ),
             (
                 "temporary PostgreSQL elevation is expiring SCRAM-only and verified removed",
-                lambda: contains(
+                lambda: has(
                     create,
                     "expires:",
                     "method: scram-sha-256",
                     "NOLOGIN NOSUPERUSER",
                     "pg_hba_file_rules",
-                    "datev_skr04_ephemeral_cleanup_reload.rc | int == 0",
                     "Assert temporary PostgreSQL elevation was completely removed",
                     "Clear the ephemeral credential",
                 )
                 and "method: trust" not in create,
             ),
             (
-                "live database credential is protected and tested",
-                lambda: contains(
-                    preflight,
-                    "Resolve the live kivitendo database password",
-                    "datev_skr04_effective_db_password",
-                    "Verify the protected application credential against the source before apply",
-                )
-                and preflight.count("no_log: true") >= 5,
-            ),
-            (
-                "target auth registration is quarantined",
-                lambda: contains(
+                "target auth registration is atomic, source-bound and quarantined",
+                lambda: has(
                     register,
+                    "WITH locked_source AS",
+                    "FOR SHARE OF c",
                     "source_client_digest",
-                    "source_users_digest",
-                    "source_groups_digest",
-                    "matching_target_clients",
-                    "Register the target as a quarantined non-default kivitendo client",
+                    "source_user_digest",
+                    "source_group_digest",
+                    "FALSE",
+                    "NULL",
                     "target_users | int == 0",
                     "target_groups | int == 0",
-                    "FALSE, NULL",
                 )
                 and "INSERT INTO auth.clients_users" not in register
                 and "INSERT INTO auth.clients_groups" not in register
                 and "ansible.builtin.file:" not in register,
             ),
             (
-                "target and source auth state are verified after registration",
-                lambda: contains(
+                "target data, DATEV values, ownership and source immutability are verified",
+                lambda: has(verify, *business_tokens)
+                and verify.count("| int == 0") >= len(business_tokens) + 3
+                and has(
                     verify,
-                    "source_client_digest == datev_skr04_source_client_digest_before",
-                    "source_users_digest == datev_skr04_source_user_digest_before",
-                    "source_groups_digest == datev_skr04_source_group_digest_before",
+                    "defaults_rows | int == 1",
+                    "'1200', '3806', '4400'",
                     "matching_target_clients | int == 1",
-                    "target_users | int == 0",
-                    "target_groups | int == 0",
-                    "task_server_user_id is none",
-                ),
-            ),
-            (
-                "every target business table is proven empty",
-                lambda: contains(verify, *business_tokens) and verify.count("| int == 0") >= len(business_tokens) + 3,
-            ),
-            (
-                "critical SKR04 properties are verified",
-                lambda: contains(verify, "invalid_account_count", "'1200', '3806', '4400'", "closed_to"),
-            ),
-            (
-                "sidecar is target-specific non-adopting and verified",
-                lambda: "datev-buchungsdatenservice-{{ datev_skr04_target_db }}.yml" in defaults
-                and contains(create, "force: false", "datev_skr04_sidecar_contract_write.changed")
-                and contains(verify, "from_yaml", "migration_run_id == datev_skr04_run_id"),
-            ),
-            (
-                "source accounting state is immutable",
-                lambda: contains(
-                    verify,
+                    "source_client_digest == datev_skr04_source_client_digest_before",
                     "datev_skr04_final_source_fingerprint",
                     "datev_skr04_snapshot_fingerprint",
                     "datev_skr04_expected_source_fingerprint",
                 ),
             ),
             (
-                "failure preserves evidence without destructive rollback",
-                lambda: contains(
-                    playbook,
-                    "No automatic deletion or rollback was attempted",
-                    "without destructive cleanup",
+                "final evidence is current YAML-safe and parse-verified",
+                lambda: has(
+                    verify,
+                    "Capture the actual final verification time",
+                    "date --utc",
+                    "to_nice_yaml",
+                    "Read back the final verification report",
+                    "from_yaml",
+                    "target_client_name == datev_skr04_target_client_name",
+                    "datev_skr04_final_evidence_ready: true",
                 )
+                and 'target_client_name: "{{ datev_skr04_target_client_name }}"' not in verify,
+            ),
+            (
+                "sidecar is target-specific non-adopting and exactly verified",
+                lambda: "datev-buchungsdatenservice-{{ datev_skr04_target_db }}.yml" in defaults
+                and has(create, "force: false", "datev_skr04_sidecar_contract_write.changed")
+                and has(verify, "from_yaml", "migration_run_id == datev_skr04_run_id"),
+            ),
+            (
+                "failed apply preserves evidence without destructive rollback",
+                lambda: has(playbook, "No automatic deletion or rollback was attempted", "without destructive cleanup")
                 and "tasks/datev_skr04/rollback.yml" not in playbook
                 and "force: true" not in aggregate
-                and "DROP DATABASE" not in aggregate
-                and "DELETE FROM datev" not in create,
+                and "DROP DATABASE" not in aggregate,
             ),
             (
-                "CI checks only the evidence-preserving playbook",
-                lambda: "datev-skr04-rollback.yml" not in workflow and workflow.count("ansible-playbook --syntax-check") == 1,
+                "native DATEV export stays prohibited",
+                lambda: "datev_skr04_native_export_allowed: false" in defaults
+                and has(verify, "native_datev_export_allowed: false", "required_extf_main_version"),
             ),
             (
-                "stopping point retains access quarantine",
-                lambda: contains(
-                    verify,
-                    "target_access_quarantined: true",
-                    "access_cutover_performed: false",
-                    "production_cutover_performed: false",
-                )
-                and "Do not grant access or start invoicing" in docs,
+                "CI executes both safety suites and one syntax check",
+                lambda: has(workflow, "tests/validate_datev_skr04.py", "tests/validate_datev_skr04_integrity.py")
+                and workflow.count("ansible-playbook --syntax-check") == 1,
             ),
             (
                 "private identifiers and API secrets are absent",
-                lambda: all(token not in aggregate for token in ("2118820", "42246", "RE-2026-", "client_secret:", "refresh_token:", "access_token:")),
+                lambda: all(
+                    token not in aggregate
+                    for token in (
+                        "2118820",
+                        "42246",
+                        "RE-2026-",
+                        "client_secret:",
+                        "refresh_token:",
+                        "access_token:",
+                    )
+                ),
             ),
             (
-                "no source conversion or shell action exists",
+                "no in-place source conversion or shell action exists",
                 lambda: "UPDATE defaults SET coa" not in aggregate
                 and "ALTER DATABASE {{ datev_skr04_source_db }}" not in aggregate
                 and "ansible.builtin.shell:" not in aggregate,
             ),
+            ("runbook retains the quarantine stop", lambda: "Do not grant access or start invoicing" in docs),
         ]
     )
 
