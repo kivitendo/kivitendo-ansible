@@ -25,10 +25,11 @@ def main() -> int:
     failures: list[str] = []
 
     playbook_path = ROOT / "datev-skr04-migration.yml"
+    document_store_path = ROOT / "tasks/datev_skr04/document_store_contract.yml"
     strict_path = ROOT / "tasks/datev_skr04/strict_environment.yml"
     fingerprint_path = ROOT / "sql/datev-skr04-source-fingerprint.sql"
 
-    for path in (playbook_path, strict_path, fingerprint_path):
+    for path in (playbook_path, document_store_path, strict_path, fingerprint_path):
         require(path.is_file(), f"missing required integrity file: {path.relative_to(ROOT)}", failures)
 
     if failures:
@@ -37,18 +38,57 @@ def main() -> int:
         return 1
 
     playbook = playbook_path.read_text(encoding="utf-8")
+    document_store = document_store_path.read_text(encoding="utf-8")
     strict = strict_path.read_text(encoding="utf-8")
     fingerprint = fingerprint_path.read_text(encoding="utf-8")
 
     yaml.safe_load(playbook)
+    yaml.safe_load(document_store)
     yaml.safe_load(strict)
 
+    document_store_include = "tasks/datev_skr04/document_store_contract.yml"
+    preflight_include = "tasks/datev_skr04/preflight.yml"
     strict_include = "tasks/datev_skr04/strict_environment.yml"
     apply_block = "Create and verify the parallel SKR04 client"
+
+    require(document_store_include in playbook, "live document-store gate is not included", failures)
+    require(
+        playbook.find(document_store_include) < playbook.find(preflight_include),
+        "live document-store gate must run before the general preflight",
+        failures,
+    )
     require(strict_include in playbook, "strict environment gate is not included", failures)
     require(
         playbook.find(strict_include) < playbook.find(apply_block),
         "strict environment gate must execute before every apply write phase",
+        failures,
+    )
+
+    require(
+        all(
+            token in document_store
+            for token in (
+                "RawConfigParser(strict=False)",
+                'parser.get("paths", "document_path"',
+                "datev_skr04_live_document_path.stdout == kivitendo_document_dir",
+                "datev_skr04_live_document_path.stdout == '/var/lib/kivitendo/documents'",
+                "follow: false",
+                "- /var/lib/kivitendo",
+                'item.stat.mode == \'0750\'",
+                "item.stat.pw_name == kivitendo_web_user",
+                "item.stat.gr_name == kivitendo_web_group",
+                'become_user: "{{ kivitendo_web_user }}"',
+                "os.R_OK, os.W_OK, os.X_OK",
+            )
+        ),
+        "document-store gate does not bind the live configuration, real path, ownership, mode and web access",
+        failures,
+    )
+    require(
+        "ansible.builtin.file:" not in document_store
+        and "ansible.builtin.copy:" not in document_store
+        and "ansible.builtin.template:" not in document_store,
+        "document-store preflight gate contains a write-capable filesystem action",
         failures,
     )
 
