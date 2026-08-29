@@ -1,0 +1,67 @@
+---
+- name: Derive the exact deterministic staging database used by the native helper
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import hashlib
+        import sys
+
+        payload = "\0".join((sys.argv[1], sys.argv[2])).encode("utf-8")
+        print("kivi_skr04_stage_" + hashlib.sha256(payload).hexdigest()[:24])
+      - "{{ datev_skr04_run_id }}"
+      - "{{ datev_skr04_target_db }}"
+  register: datev_skr04_staging_database_command
+  changed_when: false
+
+- name: Bind the exact run-specific staging database name
+  ansible.builtin.set_fact:
+    datev_skr04_staging_db: "{{ datev_skr04_staging_database_command.stdout }}"
+
+- name: Validate the run-specific staging database name
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_staging_db is match('^kivi_skr04_stage_[a-f0-9]{24}$')
+      - datev_skr04_staging_db != datev_skr04_source_db
+      - datev_skr04_staging_db != datev_skr04_target_db
+    fail_msg: >-
+      The deterministic staging database name is malformed or collides with a
+      protected source/target name. Native initialization is blocked.
+
+- name: Inspect the exact target and reserved staging namespace before snapshots
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: |
+      SELECT
+        count(*) FILTER (
+          WHERE datname = %(target_db)s
+        )::integer AS target_matches,
+        count(*) FILTER (
+          WHERE datname = %(staging_db)s
+        )::integer AS exact_staging_matches,
+        count(*) FILTER (
+          WHERE left(datname, length('kivi_skr04_stage_')) =
+                'kivi_skr04_stage_'
+        )::integer AS reserved_staging_matches
+      FROM pg_database;
+    named_args:
+      target_db: "{{ datev_skr04_target_db }}"
+      staging_db: "{{ datev_skr04_staging_db }}"
+  register: datev_skr04_staging_namespace_state
+  changed_when: false
+
+- name: Require an unused target and completely clean staging namespace
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_staging_namespace_state.query_result | length == 1
+      - datev_skr04_staging_namespace_state.query_result[0].target_matches | int == 0
+      - datev_skr04_staging_namespace_state.query_result[0].exact_staging_matches | int == 0
+      - datev_skr04_staging_namespace_state.query_result[0].reserved_staging_matches | int == 0
+    fail_msg: >-
+      The final target or a reserved kivi_skr04_stage_ database already exists.
+      Apply is blocked before service interruption and backup creation. Existing
+      or partial databases are never adopted, modified or deleted automatically.
