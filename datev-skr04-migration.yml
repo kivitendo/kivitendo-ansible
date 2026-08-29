@@ -35,6 +35,9 @@
         - name: Capture mandatory source, auth, installation and document snapshots
           ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
 
+        - name: Finalize and validate the actual snapshot evidence timestamp
+          ansible.builtin.include_tasks: tasks/datev_skr04/finalize_snapshot_manifest.yml
+
         - name: Validate mandatory snapshot evidence before any target operation
           tags:
             - always
@@ -97,6 +100,8 @@
                   - datev_skr04_snapshot_gate_manifest_payload.target_database == datev_skr04_target_db
                   - datev_skr04_snapshot_gate_manifest_payload.source_client_id | int == datev_skr04_source_client_id | int
                   - datev_skr04_snapshot_gate_manifest_payload.source_fingerprint == datev_skr04_snapshot_fingerprint
+                  - datev_skr04_snapshot_gate_manifest_payload.created_at == datev_skr04_snapshot_manifest_time.stdout
+                  - datev_skr04_snapshot_gate_manifest_payload.evidence_finalized_at == datev_skr04_snapshot_manifest_time.stdout
                   - datev_skr04_snapshot_gate_manifest_payload.local_files_snapshotted | bool
                   - not (datev_skr04_snapshot_gate_manifest_payload.source_modified_by_workflow | bool)
                   - datev_skr04_snapshot_gate_manifest_payload.source_dump_sha256 == datev_skr04_snapshot_gate_files.results[0].stat.checksum
@@ -134,6 +139,9 @@
             - (datev_skr04_snapshot_complete | default({})).get('source_fingerprint', '') == datev_skr04_expected_source_fingerprint
             - (datev_skr04_snapshot_complete | default({})).get('backup_directory', '') == datev_skr04_snapshot_gate_directory
           block:
+            - name: Revalidate all live creation inputs after snapshotting
+              ansible.builtin.include_tasks: tasks/datev_skr04/pre_create_integrity.yml
+
             - name: Initialize the isolated SKR04 database
               ansible.builtin.include_tasks: tasks/datev_skr04/create.yml
 
@@ -166,8 +174,10 @@
       ansible.builtin.assert:
         that:
           - datev_skr04_parallel_client_ready | default(false) | bool
+          - datev_skr04_final_evidence_ready | default(false) | bool
         fail_msg: >-
-          Apply mode did not complete target verification. No cutover is allowed.
+          Apply mode did not complete target and evidence verification. No
+          access, master-data migration or production cutover is allowed.
       when: datev_skr04_mode == 'apply'
 
     - name: Confirm that preflight made no changes
