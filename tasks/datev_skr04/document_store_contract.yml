@@ -71,9 +71,17 @@
       - not (item.stat.islnk | default(false) | bool)
       - item.stat.readable | default(false) | bool
       - >-
-        item.item not in ['/var', '/var/lib', '/var/lib/kivitendo'] or
+        item.item not in ['/var', '/var/lib'] or
         (
           item.stat.pw_name == 'root' and
+          item.stat.gr_name == 'root' and
+          item.stat.mode is match('^0?[0-7][0145][0145]$')
+        )
+      - >-
+        item.item != '/var/lib/kivitendo' or
+        (
+          item.stat.pw_name in ['root', kivitendo_web_user] and
+          item.stat.gr_name in ['root', kivitendo_web_group] and
           item.stat.mode is match('^0?[0-7][0145][0145]$')
         )
       - >-
