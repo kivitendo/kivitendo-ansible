@@ -1,0 +1,86 @@
+---
+- name: Re-read live critical initialization inputs immediately before target creation
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    checksum_algorithm: sha256
+  loop:
+    - "{{ kivitendo_install_dir }}/SL/User.pm"
+    - "{{ kivitendo_install_dir }}/sql/{{ datev_skr04_target_coa }}-chart.sql"
+  register: datev_skr04_critical_live_file_states_before_create
+
+- name: Prove live initializer and chart did not change after preflight and snapshot
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | bool
+      - item.stat.isreg | default(false) | bool
+      - not (item.stat.islnk | default(false) | bool)
+      - item.stat.readable | default(false) | bool
+      - item.stat.checksum == expected_checksum
+    fail_msg: >-
+      Critical live creation input {{ item.item }} changed, disappeared, became
+      unreadable or became a symlink after preflight. Target creation is blocked.
+  loop:
+    - item: "{{ datev_skr04_critical_live_file_states_before_create.results[0] }}"
+      expected_checksum: "{{ datev_skr04_live_user_pm_sha256 }}"
+    - item: "{{ datev_skr04_critical_live_file_states_before_create.results[1] }}"
+      expected_checksum: "{{ datev_skr04_live_skr04_chart_sha256 }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+  vars:
+    expected_checksum: "{{ item.expected_checksum }}"
+
+- name: Re-read the installed kivitendo revision immediately before target creation
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ kivitendo_install_dir }}"
+      - rev-parse
+      - HEAD
+  register: datev_skr04_installed_revision_before_create
+  changed_when: false
+
+- name: Require the pinned installed revision immediately before target creation
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_installed_revision_before_create.stdout == kivitendo_version
+    fail_msg: >-
+      The installed kivitendo revision changed after preflight. The target will
+      not be initialized with a different or unaudited code revision.
+
+- name: Revalidate the persistent application-role capability set before creation
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: postgres
+    query: |
+      SELECT
+        r.rolcanlogin,
+        r.rolcreatedb,
+        r.rolsuper,
+        r.rolcreaterole,
+        r.rolreplication,
+        r.rolbypassrls,
+        (SELECT count(*)::bigint FROM pg_auth_members m WHERE m.member = r.oid)
+          AS granted_role_memberships
+      FROM pg_roles r
+      WHERE r.rolname = %(db_user)s;
+    named_args:
+      db_user: "{{ datev_skr04_db_user }}"
+  register: datev_skr04_application_role_before_create
+  changed_when: false
+
+- name: Refuse role-privilege drift immediately before target creation
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_application_role_before_create.query_result | length == 1
+      - datev_skr04_application_role_before_create.query_result[0].rolcanlogin | bool
+      - datev_skr04_application_role_before_create.query_result[0].rolcreatedb | bool
+      - not (datev_skr04_application_role_before_create.query_result[0].rolsuper | bool)
+      - not (datev_skr04_application_role_before_create.query_result[0].rolcreaterole | bool)
+      - not (datev_skr04_application_role_before_create.query_result[0].rolreplication | bool)
+      - not (datev_skr04_application_role_before_create.query_result[0].rolbypassrls | bool)
+      - datev_skr04_application_role_before_create.query_result[0].granted_role_memberships | int == 0
+    fail_msg: >-
+      The persistent application role no longer has the approved LOGIN and
+      CREATEDB-only capability set. No target operation is permitted.
