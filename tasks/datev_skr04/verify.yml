@@ -5,6 +5,7 @@
     login_db: "{{ datev_skr04_target_db }}"
     query: |
       SELECT
+        (SELECT count(*)::bigint FROM defaults) AS defaults_rows,
         d.coa,
         d.closedto::text AS closed_to,
         d.accounting_method,
@@ -44,6 +45,7 @@
   ansible.builtin.assert:
     that:
       - datev_skr04_target_verification.query_result | length == 1
+      - datev_skr04_target_verification.query_result[0].defaults_rows | int == 1
       - datev_skr04_target_verification.query_result[0].coa == datev_skr04_target_coa
       - datev_skr04_target_verification.query_result[0].closed_to == datev_skr04_closed_to
       - datev_skr04_target_verification.query_result[0].accounting_method == datev_skr04_accounting_method
@@ -74,8 +76,9 @@
       - datev_skr04_target_verification.query_result[0].marker_source_database == datev_skr04_source_db
       - datev_skr04_target_verification.query_result[0].marker_target_database == datev_skr04_target_db
     fail_msg: >-
-      Target verification failed. The dataset is not a pristine, run-bound
-      four-digit SKR04 client with the approved fiscal boundary and DATEV identifiers.
+      Target verification failed. The dataset is not a pristine, unambiguous,
+      run-bound four-digit SKR04 client with the approved fiscal boundary and
+      DATEV identifiers.
   no_log: true
 
 - name: Read the target-specific sidecar contract for final verification
@@ -103,8 +106,8 @@
       - datev_skr04_verified_sidecar_payload.chart_of_accounts == datev_skr04_target_coa
       - datev_skr04_verified_sidecar_payload.datev_chart_code | string == '04'
       - datev_skr04_verified_sidecar_payload.account_length | int == datev_skr04_account_length | int
-      - datev_skr04_verified_sidecar_payload.fiscal_year_start_2026 == datev_skr04_fiscal_year_start
-      - datev_skr04_verified_sidecar_payload.closed_through == datev_skr04_closed_to
+      - datev_skr04_verified_sidecar_payload.fiscal_year_start_2026 == '2026-07-13'
+      - datev_skr04_verified_sidecar_payload.closed_through == '2026-07-12'
       - datev_skr04_verified_sidecar_payload.consultant_number | string == datev_skr04_consultant_number | string
       - datev_skr04_verified_sidecar_payload.client_number | string == datev_skr04_client_number | string
       - not (datev_skr04_verified_sidecar_payload.native_kivitendo_export_allowed | bool)
@@ -132,7 +135,7 @@
     fail_msg: The configured kivitendo database role cannot open the target database.
   no_log: true
 
-- name: Verify database ownership and absence of persistent elevation
+- name: Verify database ownership and complete persistent role state
   become_user: postgres
   community.postgresql.postgresql_query:
     login_db: postgres
@@ -140,7 +143,14 @@
       SELECT
         d.datname,
         pg_get_userbyid(d.datdba) AS owner,
-        r.rolsuper AS application_role_is_superuser,
+        r.rolcanlogin,
+        r.rolcreatedb,
+        r.rolsuper,
+        r.rolcreaterole,
+        r.rolreplication,
+        r.rolbypassrls,
+        (SELECT count(*)::bigint FROM pg_auth_members m WHERE m.member = r.oid)
+          AS granted_role_memberships,
         EXISTS (
           SELECT 1 FROM pg_roles
           WHERE rolname LIKE 'kivi_migrate_%'
@@ -154,16 +164,22 @@
   register: datev_skr04_ownership_verification
   changed_when: false
 
-- name: Assert ownership is stable and no elevated role remains
+- name: Assert ownership is stable and no persistent elevation remains
   ansible.builtin.assert:
     that:
       - datev_skr04_ownership_verification.query_result | length == 1
       - datev_skr04_ownership_verification.query_result[0].owner == datev_skr04_db_user
-      - not (datev_skr04_ownership_verification.query_result[0].application_role_is_superuser | bool)
+      - datev_skr04_ownership_verification.query_result[0].rolcanlogin | bool
+      - datev_skr04_ownership_verification.query_result[0].rolcreatedb | bool
+      - not (datev_skr04_ownership_verification.query_result[0].rolsuper | bool)
+      - not (datev_skr04_ownership_verification.query_result[0].rolcreaterole | bool)
+      - not (datev_skr04_ownership_verification.query_result[0].rolreplication | bool)
+      - not (datev_skr04_ownership_verification.query_result[0].rolbypassrls | bool)
+      - datev_skr04_ownership_verification.query_result[0].granted_role_memberships | int == 0
       - not (datev_skr04_ownership_verification.query_result[0].temporary_roles_remain | bool)
     fail_msg: >-
       The target ownership or PostgreSQL role state violates the post-migration
-      least-privilege requirement.
+      LOGIN and CREATEDB-only least-privilege requirement.
 
 - name: Verify target quarantine and source authentication mapping immutability
   become_user: postgres
@@ -173,11 +189,18 @@
       SELECT
         c.id,
         c.name,
+        c.dbhost,
+        c.dbport,
         c.dbname,
+        c.dbuser,
         c.is_default,
         c.task_server_user_id,
         (SELECT md5(row_to_json(sc)::text) FROM auth.clients sc
-          WHERE sc.id = %(source_id)s AND sc.dbname = %(source_db)s) AS source_client_digest,
+          WHERE sc.id = %(source_id)s
+            AND sc.dbname = %(source_db)s
+            AND sc.dbhost = %(source_host)s
+            AND sc.dbport::text = %(source_port)s
+            AND sc.dbuser = %(source_user)s) AS source_client_digest,
         (SELECT count(*) FROM auth.clients_users WHERE client_id = c.id) AS target_users,
         (SELECT count(*) FROM auth.clients_groups WHERE client_id = c.id) AS target_groups,
         (SELECT count(*) FROM auth.clients_users WHERE client_id = %(source_id)s) AS source_users,
@@ -193,6 +216,9 @@
     named_args:
       source_id: "{{ datev_skr04_source_client_id | int }}"
       source_db: "{{ datev_skr04_source_db }}"
+      source_host: "{{ datev_skr04_db_host }}"
+      source_port: "{{ datev_skr04_db_port | string }}"
+      source_user: "{{ datev_skr04_db_user }}"
       target_id: "{{ datev_skr04_target_client_id | int }}"
       target_db: "{{ datev_skr04_target_db }}"
       target_name: "{{ datev_skr04_target_client_name }}"
@@ -204,7 +230,10 @@
     that:
       - datev_skr04_final_auth_verification.query_result | length == 1
       - datev_skr04_final_auth_verification.query_result[0].name == datev_skr04_target_client_name
+      - datev_skr04_final_auth_verification.query_result[0].dbhost == datev_skr04_db_host
+      - datev_skr04_final_auth_verification.query_result[0].dbport | string == datev_skr04_db_port | string
       - datev_skr04_final_auth_verification.query_result[0].dbname == datev_skr04_target_db
+      - datev_skr04_final_auth_verification.query_result[0].dbuser == datev_skr04_db_user
       - not (datev_skr04_final_auth_verification.query_result[0].is_default | bool)
       - datev_skr04_final_auth_verification.query_result[0].task_server_user_id is none
       - datev_skr04_final_auth_verification.query_result[0].target_users | int == 0
@@ -217,7 +246,7 @@
       - datev_skr04_final_auth_verification.query_result[0].source_groups_digest == datev_skr04_source_group_digest_before
     fail_msg: >-
       The target gained interactive access, default/task-server ownership or the
-      protected source authentication mappings changed during preparation.
+      protected source authentication identity/mappings changed during preparation.
 
 - name: Re-read the source after all target-only operations
   become_user: postgres
@@ -243,18 +272,23 @@
       The source fingerprint changed. The target is not released for use and
       the source must be restored or investigated from the captured snapshots.
 
-- name: Write the protected verification report
-  ansible.builtin.copy:
-    dest: "{{ datev_skr04_backup_directory }}/verification.yml"
-    owner: postgres
-    group: postgres
-    mode: "0600"
-    content: |
-      version: 3
+- name: Capture the actual final verification time
+  ansible.builtin.command:
+    argv:
+      - date
+      - --utc
+      - +%Y-%m-%dT%H:%M:%SZ
+  register: datev_skr04_final_verification_time
+  changed_when: false
+
+- name: Build the structured final verification evidence
+  ansible.builtin.set_fact:
+    datev_skr04_verification_report:
+      version: 4
       run_id: "{{ datev_skr04_run_id }}"
-      verified_at: "{{ ansible_facts.date_time.iso8601 }}"
+      verified_at: "{{ datev_skr04_final_verification_time.stdout }}"
       source_database: "{{ datev_skr04_source_db }}"
-      source_client_id: {{ datev_skr04_source_client_id }}
+      source_client_id: "{{ datev_skr04_source_client_id | int }}"
       source_fingerprint_before: "{{ datev_skr04_snapshot_fingerprint }}"
       source_fingerprint_after: "{{ datev_skr04_final_source_fingerprint }}"
       source_unchanged: true
@@ -262,9 +296,9 @@
       source_auth_user_mappings_unchanged: true
       source_auth_group_mappings_unchanged: true
       target_database: "{{ datev_skr04_target_db }}"
-      target_client_id: {{ datev_skr04_target_client_id }}
+      target_client_id: "{{ datev_skr04_target_client_id | int }}"
       target_client_name: "{{ datev_skr04_target_client_name }}"
-      target_marker_key: "kivitendo-datev-skr04-v1"
+      target_marker_key: kivitendo-datev-skr04-v1
       target_marker_run_id: "{{ datev_skr04_run_id }}"
       target_is_default: false
       target_task_server_enabled: false
@@ -273,22 +307,84 @@
       target_access_quarantined: true
       target_business_tables_empty: true
       chart_of_accounts: "{{ datev_skr04_target_coa }}"
-      account_length: {{ datev_skr04_account_length }}
-      closed_through: "{{ datev_skr04_closed_to }}"
-      fiscal_year_start_2026: "{{ datev_skr04_fiscal_year_start }}"
+      account_length: "{{ datev_skr04_account_length | int }}"
+      closed_through: '2026-07-12'
+      fiscal_year_start_2026: '2026-07-13'
       consultant_number: "{{ datev_skr04_consultant_number }}"
       client_number: "{{ datev_skr04_client_number }}"
       sidecar_config_file: "{{ datev_skr04_sidecar_config_file }}"
-      sidecar_workflow_marker: "kivitendo-datev-skr04-v1"
+      sidecar_workflow_marker: kivitendo-datev-skr04-v1
       sidecar_run_owned: true
       business_transactions_migrated: false
       access_cutover_performed: false
       production_cutover_performed: false
       native_datev_export_allowed: false
+
+- name: Write the final verification report using YAML-safe serialization
+  ansible.builtin.copy:
+    dest: "{{ datev_skr04_backup_directory }}/verification.yml"
+    owner: postgres
+    group: postgres
+    mode: "0600"
+    content: "{{ datev_skr04_verification_report | to_nice_yaml(indent=2) }}"
   no_log: true
 
-- name: Mark the quarantined parallel client ready for controlled migration work
+- name: Read back the final verification report
+  ansible.builtin.slurp:
+    src: "{{ datev_skr04_backup_directory }}/verification.yml"
+  register: datev_skr04_verification_report_raw
+  no_log: true
+
+- name: Parse the final verification report
   ansible.builtin.set_fact:
+    datev_skr04_verification_report_verified: >-
+      {{ datev_skr04_verification_report_raw.content | b64decode | from_yaml }}
+  no_log: true
+
+- name: Prove the final verification evidence is parseable and exact
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_verification_report_verified is mapping
+      - datev_skr04_verification_report_verified.version | int == 4
+      - datev_skr04_verification_report_verified.run_id == datev_skr04_run_id
+      - datev_skr04_verification_report_verified.verified_at == datev_skr04_final_verification_time.stdout
+      - datev_skr04_verification_report_verified.source_database == datev_skr04_source_db
+      - datev_skr04_verification_report_verified.source_fingerprint_before == datev_skr04_snapshot_fingerprint
+      - datev_skr04_verification_report_verified.source_fingerprint_after == datev_skr04_final_source_fingerprint
+      - datev_skr04_verification_report_verified.target_database == datev_skr04_target_db
+      - datev_skr04_verification_report_verified.target_client_name == datev_skr04_target_client_name
+      - datev_skr04_verification_report_verified.target_access_quarantined | bool
+      - not (datev_skr04_verification_report_verified.access_cutover_performed | bool)
+      - not (datev_skr04_verification_report_verified.production_cutover_performed | bool)
+      - datev_skr04_verification_report_verified.closed_through == '2026-07-12'
+      - datev_skr04_verification_report_verified.fiscal_year_start_2026 == '2026-07-13'
+    fail_msg: >-
+      The protected final verification report is malformed, not YAML-safe or
+      does not exactly describe this migration run. The target remains blocked.
+  no_log: true
+
+- name: Inspect the final verification report as immutable evidence
+  ansible.builtin.stat:
+    path: "{{ datev_skr04_backup_directory }}/verification.yml"
+    follow: false
+    checksum_algorithm: sha256
+  register: datev_skr04_verification_report_state
+
+- name: Require a non-empty regular final verification report
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_verification_report_state.stat.exists | bool
+      - datev_skr04_verification_report_state.stat.isreg | default(false) | bool
+      - not (datev_skr04_verification_report_state.stat.islnk | default(false) | bool)
+      - datev_skr04_verification_report_state.stat.size | int > 0
+      - datev_skr04_verification_report_state.stat.checksum is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      The final verification report is absent, empty, not a regular file or is
+      reached through a symbolic link.
+
+- name: Mark the quarantined parallel client and its evidence ready
+  ansible.builtin.set_fact:
+    datev_skr04_final_evidence_ready: true
     datev_skr04_parallel_client_ready: true
 
 - name: Report the enforced stopping point
