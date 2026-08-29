@@ -74,7 +74,7 @@
         item.item not in ['/var', '/var/lib', '/var/lib/kivitendo'] or
         (
           item.stat.pw_name == 'root' and
-          not (item.stat.mode is match('^0?[0-7][2367][2367]$'))
+          item.stat.mode is match('^0?[0-7][0145][0145]$')
         )
       - >-
         item.item != kivitendo_document_dir or
