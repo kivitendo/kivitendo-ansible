@@ -11,6 +11,12 @@
     - datev-skr04-defaults.yml
 
   tasks:
+    - name: Bind the live filesystem document store to mandatory recovery evidence
+      ansible.builtin.include_tasks: tasks/datev_skr04/document_store_contract.yml
+      tags:
+        - always
+        - preflight
+
     - name: Run the read-only and fail-closed preflight
       ansible.builtin.include_tasks: tasks/datev_skr04/preflight.yml
       tags:
