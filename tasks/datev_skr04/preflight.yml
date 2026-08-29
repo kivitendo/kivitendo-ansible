@@ -1,0 +1,410 @@
+---
+- name: Derive immutable migration run facts
+  ansible.builtin.set_fact:
+    datev_skr04_run_id: >-
+      {{ ansible_facts.date_time.iso8601_basic_short | regex_replace('[^0-9T]', '') }}-{{ 999999 | random }}
+    datev_skr04_source_fingerprint_query: >-
+      {{ lookup('ansible.builtin.file', 'sql/datev-skr04-source-fingerprint.sql') }}
+    datev_skr04_expected_sidecar_config_file: >-
+      {{ datev_skr04_sidecar_config_dir }}/datev-buchungsdatenservice-{{ datev_skr04_target_db }}.yml
+
+- name: Validate the production-local non-destructive migration contract
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_mode in ['preflight', 'apply']
+      - (ansible_connection | default('')) == 'local'
+      - inventory_hostname in ['localhost', '127.0.0.1']
+      - datev_skr04_source_db | length > 0
+      - datev_skr04_target_db | length > 0
+      - datev_skr04_source_db != datev_skr04_target_db
+      - datev_skr04_source_db is match('^[a-z][a-z0-9_]{2,62}$')
+      - datev_skr04_target_db is match('^[a-z][a-z0-9_]{2,62}$')
+      - datev_skr04_auth_db is match('^[a-z][a-z0-9_]{2,62}$')
+      - datev_skr04_db_user is match('^[A-Za-z_][A-Za-z0-9_.-]{0,62}$')
+      - datev_skr04_target_client_name | length >= 3
+      - datev_skr04_target_client_name is not search('[\\/\r\n]')
+      - datev_skr04_target_coa == 'Germany-DATEV-SKR04EU'
+      - datev_skr04_expected_source_coa == 'Germany-DATEV-SKR03EU'
+      - datev_skr04_account_length | int == 4
+      - datev_skr04_fiscal_year_start is match('^20[0-9]{2}-[0-9]{2}-[0-9]{2}$')
+      - datev_skr04_closed_to is match('^20[0-9]{2}-[0-9]{2}-[0-9]{2}$')
+      - >-
+        ((datev_skr04_fiscal_year_start | to_datetime('%Y-%m-%d'))
+        - (datev_skr04_closed_to | to_datetime('%Y-%m-%d'))).days == 1
+      - datev_skr04_db_host == '127.0.0.1'
+      - (datev_skr04_db_port | string) is match('^[0-9]{1,5}$')
+      - datev_skr04_db_port | int > 0
+      - datev_skr04_db_port | int <= 65535
+      - datev_skr04_backup_root == '/var/backups/kivitendo/datev-skr04'
+      - datev_skr04_backup_documents | bool
+      - datev_skr04_quiesce_source | bool
+      - kivitendo_install_dir == '/var/www/kivitendo-erp'
+      - kivitendo_document_dir == '/var/lib/kivitendo/documents'
+      - datev_skr04_sidecar_config_dir == '/etc/kivitendo'
+      - datev_skr04_sidecar_config_file == datev_skr04_expected_sidecar_config_file
+      - not (datev_skr04_native_export_allowed | bool)
+    fail_msg: >-
+      Refusing to continue because the production-local safety contract is
+      incomplete, disables mandatory recovery evidence, points at a nonlocal
+      PostgreSQL endpoint or uses an unapproved filesystem path.
+
+- name: Inspect fixed managed directory components without following symlinks
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /var/backups
+    - /var/backups/kivitendo
+    - "{{ datev_skr04_backup_root }}"
+    - /etc
+    - "{{ datev_skr04_sidecar_config_dir }}"
+  register: datev_skr04_managed_directory_states
+
+- name: Reject symlinks and non-directories in managed path components
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false) | bool)
+      - not (item.stat.exists | bool) or (item.stat.isdir | default(false) | bool)
+      - >-
+        item.item not in ['/var/backups', '/etc'] or
+        (item.stat.exists | bool)
+      - >-
+        not (item.stat.exists | bool) or
+        item.item not in ['/var/backups', '/etc', datev_skr04_sidecar_config_dir] or
+        item.stat.pw_name == 'root'
+      - >-
+        not (item.stat.exists | bool) or
+        item.item not in ['/var/backups', '/etc', datev_skr04_sidecar_config_dir] or
+        item.stat.mode is match('^0?[0-7][0145][0145]$')
+    fail_msg: >-
+      Managed path component {{ item.item }} is missing where mandatory, is a
+      symlink or is not a directory. System configuration components must also
+      be root-owned and not group/world-writable.
+  loop: "{{ datev_skr04_managed_directory_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Inspect the repository-native dataset helper
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/scripts/kivitendo-create-dataset.pl"
+    follow: false
+    checksum_algorithm: sha256
+  register: datev_skr04_helper_source
+
+- name: Assert the helper is a regular repository file
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_helper_source.stat.exists | bool
+      - datev_skr04_helper_source.stat.isreg | bool
+      - not (datev_skr04_helper_source.stat.islnk | default(false) | bool)
+      - datev_skr04_helper_source.stat.checksum is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      The repository-native dataset helper is missing, not a regular file or is
+      reached through a symlink. Apply will not execute an ambiguous helper.
+
+- name: Check whether the target-specific DATEV sidecar contract already exists
+  ansible.builtin.stat:
+    path: "{{ datev_skr04_sidecar_config_file }}"
+    follow: false
+  register: datev_skr04_existing_sidecar_contract
+
+- name: Refuse to overwrite or follow any pre-existing DATEV sidecar path
+  ansible.builtin.assert:
+    that:
+      - not (datev_skr04_existing_sidecar_contract.stat.exists | bool)
+      - not (datev_skr04_existing_sidecar_contract.stat.islnk | default(false) | bool)
+    fail_msg: >-
+      The target-specific DATEV sidecar path already exists or is a symlink. The
+      workflow never overwrites, follows or adopts an existing transfer path.
+
+- name: Validate required kivitendo initialization paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ kivitendo_install_dir }}"
+    - "{{ kivitendo_install_dir }}/.git"
+    - "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+    - "{{ kivitendo_install_dir }}/sql/{{ datev_skr04_target_coa }}-chart.sql"
+    - "{{ kivitendo_install_dir }}/SL/User.pm"
+  register: datev_skr04_required_paths
+
+- name: Assert kivitendo's native dataset initializer and live configuration are available
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_required_paths.results | map(attribute='stat.exists') | min
+    fail_msg: >-
+      The installed kivitendo tree does not contain all files required for a
+      native, auditable SKR04 dataset initialization.
+
+- name: Validate every source covered by the mandatory local-file snapshots
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ kivitendo_install_dir }}/config"
+    - "{{ kivitendo_install_dir }}/templates"
+    - "{{ kivitendo_install_dir }}/users"
+    - "{{ kivitendo_install_dir }}/webdav"
+    - "{{ kivitendo_document_dir }}"
+  register: datev_skr04_snapshot_source_paths
+
+- name: Assert all local customization and document stores are snapshotable
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | bool
+      - item.stat.isdir | bool
+      - item.stat.readable | default(true) | bool
+    fail_msg: >-
+      Required snapshot source {{ item.item }} is missing, not a directory or
+      not readable. Apply is blocked rather than creating incomplete evidence.
+  loop: "{{ datev_skr04_snapshot_source_paths.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Read local PostgreSQL database and port state
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: postgres
+    query: |
+      SELECT
+        current_setting('port')::integer AS local_port,
+        EXISTS (SELECT 1 FROM pg_database WHERE datname = %(source_db)s) AS source_exists,
+        EXISTS (SELECT 1 FROM pg_database WHERE datname = %(target_db)s) AS target_exists,
+        EXISTS (SELECT 1 FROM pg_database WHERE datname = %(auth_db)s) AS auth_exists;
+    named_args:
+      source_db: "{{ datev_skr04_source_db }}"
+      target_db: "{{ datev_skr04_target_db }}"
+      auth_db: "{{ datev_skr04_auth_db }}"
+  register: datev_skr04_database_state
+  changed_when: false
+
+- name: Assert the exact local cluster contains source and auth but no target
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_database_state.query_result | length == 1
+      - datev_skr04_database_state.query_result[0].local_port | int == datev_skr04_db_port | int
+      - datev_skr04_database_state.query_result[0].source_exists | bool
+      - datev_skr04_database_state.query_result[0].auth_exists | bool
+      - not (datev_skr04_database_state.query_result[0].target_exists | bool)
+    fail_msg: >-
+      The configured TCP endpoint is not the same local PostgreSQL cluster,
+      source/auth is missing or the target database already exists. No existing
+      database is ever reused by this migration.
+
+- name: Validate the application database role and prior migration cleanup
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: postgres
+    query: |
+      SELECT
+        r.rolcanlogin,
+        r.rolcreatedb,
+        r.rolsuper,
+        (SELECT count(*)::bigint FROM pg_roles WHERE rolname LIKE 'kivi_migrate_%') AS stale_migration_roles
+      FROM pg_roles r
+      WHERE r.rolname = %(db_user)s;
+    named_args:
+      db_user: "{{ datev_skr04_db_user }}"
+  register: datev_skr04_db_role
+  changed_when: false
+
+- name: Assert the application role has only the required creation capability
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_db_role.query_result | length == 1
+      - datev_skr04_db_role.query_result[0].rolcanlogin | bool
+      - datev_skr04_db_role.query_result[0].rolcreatedb | bool
+      - not (datev_skr04_db_role.query_result[0].rolsuper | bool)
+      - datev_skr04_db_role.query_result[0].stale_migration_roles | int == 0
+    fail_msg: >-
+      The configured kivitendo database role must exist, be able to log in and
+      possess CREATEDB without SUPERUSER. No stale kivi_migrate_* role may remain.
+
+- name: Resolve the live kivitendo database password when no protected override was supplied
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import configparser
+        import pathlib
+        import sys
+
+        path = pathlib.Path(sys.argv[1])
+        parser = configparser.ConfigParser(interpolation=None)
+        with path.open("r", encoding="utf-8") as handle:
+            parser.read_file(handle)
+        value = parser.get("authentication/database", "password", fallback="")
+        if not value:
+            raise SystemExit("live kivitendo database password is missing")
+        sys.stdout.write(value)
+      - "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+  register: datev_skr04_live_db_password
+  changed_when: false
+  when:
+    - datev_skr04_mode == 'apply'
+    - datev_skr04_db_password | length == 0
+  no_log: true
+
+- name: Keep the live database password only in the current protected Ansible process
+  ansible.builtin.set_fact:
+    datev_skr04_effective_db_password: >-
+      {{
+        datev_skr04_db_password
+        if datev_skr04_db_password | length > 0
+        else datev_skr04_live_db_password.stdout
+      }}
+  when: datev_skr04_mode == 'apply'
+  no_log: true
+
+- name: Locate the existing source client in kivitendo authentication data
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      SELECT id, name, dbhost, dbport, dbname, dbuser, is_default, task_server_user_id
+      FROM auth.clients
+      WHERE dbname = %(source_db)s
+      ORDER BY id;
+    named_args:
+      source_db: "{{ datev_skr04_source_db }}"
+  register: datev_skr04_source_client_rows
+  changed_when: false
+
+- name: Assert the source database has one unambiguous auth client
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_client_rows.query_result | length == 1
+    fail_msg: >-
+      Exactly one authentication client must reference the source database.
+      The playbook will not guess which client to clone permissions from.
+
+- name: Store the immutable source client identity
+  ansible.builtin.set_fact:
+    datev_skr04_source_client_id: "{{ datev_skr04_source_client_rows.query_result[0].id | int }}"
+    datev_skr04_source_client_name: "{{ datev_skr04_source_client_rows.query_result[0].name }}"
+
+- name: Check for conflicting target client registrations
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      SELECT id, name, dbname, is_default
+      FROM auth.clients
+      WHERE dbname = %(target_db)s OR name = %(target_name)s
+      ORDER BY id;
+    named_args:
+      target_db: "{{ datev_skr04_target_db }}"
+      target_name: "{{ datev_skr04_target_client_name }}"
+  register: datev_skr04_target_client_conflicts
+  changed_when: false
+
+- name: Assert the target auth identity is unused
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_target_client_conflicts.query_result | length == 0
+    fail_msg: >-
+      A kivitendo authentication client already uses the requested target name
+      or database. Existing clients are never modified by this workflow.
+
+- name: Read the source accounting state for fingerprinting
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_source_db }}"
+    query: "{{ datev_skr04_source_fingerprint_query }}"
+  register: datev_skr04_source_fingerprint_raw
+  changed_when: false
+
+- name: Read source account-length and fiscal-start invariants
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_source_db }}"
+    query: |
+      SELECT
+        (SELECT count(*)::bigint FROM chart WHERE charttype = 'A') AS account_count,
+        (SELECT count(*)::bigint FROM chart WHERE charttype = 'A' AND accno !~ '^[0-9]{4}$') AS invalid_account_count,
+        (SELECT count(*)::bigint FROM acc_trans WHERE transdate < %(fiscal_start)s::date) AS postings_before_fiscal_start,
+        (SELECT count(*)::bigint FROM ar) AS ar_count,
+        (SELECT count(*)::bigint FROM acc_trans) AS acc_trans_count,
+        coa,
+        closedto::text AS closed_to,
+        accounting_method,
+        profit_determination
+      FROM defaults
+      LIMIT 1;
+    named_args:
+      fiscal_start: "{{ datev_skr04_fiscal_year_start }}"
+  register: datev_skr04_source_invariants
+  changed_when: false
+
+- name: Calculate the source-state fingerprint
+  ansible.builtin.set_fact:
+    datev_skr04_source_fingerprint_actual: >-
+      {{ datev_skr04_source_fingerprint_raw.query_result[0]
+         | to_json
+         | hash('sha256') }}
+
+- name: Assert the audited source accounting state still matches the migration premise
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_invariants.query_result | length == 1
+      - datev_skr04_source_invariants.query_result[0].coa == datev_skr04_expected_source_coa
+      - datev_skr04_source_invariants.query_result[0].account_count | int > 0
+      - datev_skr04_source_invariants.query_result[0].invalid_account_count | int == 0
+      - datev_skr04_source_invariants.query_result[0].postings_before_fiscal_start | int == 0
+      - datev_skr04_source_invariants.query_result[0].accounting_method == datev_skr04_accounting_method
+      - datev_skr04_source_invariants.query_result[0].profit_determination == datev_skr04_profit_determination
+    fail_msg: >-
+      The source no longer matches the audited four-digit SKR03/EÜR state, or
+      it contains a posting before the required short fiscal year.
+
+- name: Enforce apply-only confirmation and identity binding
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+      - datev_skr04_apply_confirmation == datev_skr04_apply_token
+      - datev_skr04_expected_source_fingerprint is match('^[0-9a-f]{64}$')
+      - datev_skr04_expected_source_fingerprint == datev_skr04_source_fingerprint_actual
+      - datev_skr04_effective_db_password | length > 0
+      - datev_skr04_consultant_number is match('^[0-9]{1,7}$')
+      - datev_skr04_client_number is match('^[0-9]{1,5}$')
+      - >-
+        datev_skr04_initial_debtor_number | length == 0 or
+        datev_skr04_initial_debtor_number is match('^[0-9]{5}$')
+    fail_msg: >-
+      Apply mode requires the exact confirmation token, the fingerprint from a
+      fresh preflight run, valid DATEV identifiers and a verified protected
+      database password. Refusing an unbound or stale migration run.
+  when: datev_skr04_mode == 'apply'
+  no_log: true
+
+- name: Verify the protected application credential against the source before apply
+  community.postgresql.postgresql_ping:
+    login_host: "{{ datev_skr04_db_host }}"
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_source_db }}"
+    login_user: "{{ datev_skr04_db_user }}"
+    login_password: "{{ datev_skr04_effective_db_password }}"
+  register: datev_skr04_source_application_ping
+  when: datev_skr04_mode == 'apply'
+  no_log: true
+
+- name: Assert the live application credential is valid before any write phase
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_application_ping.is_available | bool
+    fail_msg: >-
+      The protected kivitendo database credential cannot authenticate to the
+      source database. No snapshot or target creation was attempted.
+  when: datev_skr04_mode == 'apply'
+  no_log: true
+
+- name: Report the preflight result and bindable source fingerprint
+  ansible.builtin.debug:
+    msg:
+      - "Source client: {{ datev_skr04_source_client_name }} (database {{ datev_skr04_source_db }})"
+      - "Target client: {{ datev_skr04_target_client_name }} (new database {{ datev_skr04_target_db }})"
+      - "Source fingerprint: {{ datev_skr04_source_fingerprint_actual }}"
+      - >-
+        Preflight is read-only. Copy this fingerprint into the protected local
+        variable file only after this exact commit has green CI and Codex review.
+  when: datev_skr04_mode == 'preflight'

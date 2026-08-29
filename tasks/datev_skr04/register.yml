@@ -1,0 +1,135 @@
+---
+- name: Capture the source authentication mapping baseline
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      SELECT
+        c.id,
+        md5(row_to_json(c)::text) AS source_client_digest,
+        (SELECT count(*) FROM auth.clients_users WHERE client_id = c.id) AS source_users,
+        (SELECT COALESCE(md5(string_agg(cu.user_id::text, ',' ORDER BY cu.user_id)), md5(''))
+           FROM auth.clients_users cu WHERE cu.client_id = c.id) AS source_users_digest,
+        (SELECT count(*) FROM auth.clients_groups WHERE client_id = c.id) AS source_groups,
+        (SELECT COALESCE(md5(string_agg(cg.group_id::text, ',' ORDER BY cg.group_id)), md5(''))
+           FROM auth.clients_groups cg WHERE cg.client_id = c.id) AS source_groups_digest
+      FROM auth.clients c
+      WHERE c.id = %(source_id)s
+        AND c.dbname = %(source_db)s;
+    named_args:
+      source_id: "{{ datev_skr04_source_client_id | int }}"
+      source_db: "{{ datev_skr04_source_db }}"
+  register: datev_skr04_source_auth_mapping_baseline
+  changed_when: false
+
+- name: Assert the protected source auth client still exists before registration
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_auth_mapping_baseline.query_result | length == 1
+    fail_msg: >-
+      The protected source auth client changed after preflight. Target
+      registration is blocked before any authentication row is inserted.
+
+- name: Store the exact source authentication mapping baseline
+  ansible.builtin.set_fact:
+    datev_skr04_source_client_digest_before: >-
+      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_client_digest }}
+    datev_skr04_source_user_count_before: >-
+      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_users | int }}
+    datev_skr04_source_user_digest_before: >-
+      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_users_digest }}
+    datev_skr04_source_group_count_before: >-
+      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_groups | int }}
+    datev_skr04_source_group_digest_before: >-
+      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_groups_digest }}
+
+- name: Register the target as a quarantined non-default kivitendo client
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      INSERT INTO auth.clients
+        (name, dbhost, dbport, dbname, dbuser, dbpasswd, is_default, task_server_user_id)
+      SELECT
+        %(target_name)s, %(dbhost)s, %(dbport)s, %(dbname)s, %(dbuser)s,
+        %(dbpasswd)s, FALSE, NULL
+      WHERE NOT EXISTS (
+        SELECT 1 FROM auth.clients
+        WHERE dbname = %(dbname)s OR name = %(target_name)s
+      )
+      RETURNING id;
+    named_args:
+      target_name: "{{ datev_skr04_target_client_name }}"
+      dbhost: "{{ datev_skr04_db_host }}"
+      dbport: "{{ datev_skr04_db_port | string }}"
+      dbname: "{{ datev_skr04_target_db }}"
+      dbuser: "{{ datev_skr04_db_user }}"
+      dbpasswd: "{{ datev_skr04_effective_db_password }}"
+  register: datev_skr04_target_client_insert
+  no_log: true
+
+- name: Assert the target auth identity remained unused through insertion
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_target_client_insert.query_result | length == 1
+    fail_msg: >-
+      The target client name or database was registered concurrently after
+      preflight. No existing authentication row was adopted or modified.
+  no_log: true
+
+- name: Store the quarantined target client identity
+  ansible.builtin.set_fact:
+    datev_skr04_target_client_id: >-
+      {{ datev_skr04_target_client_insert.query_result[0].id | int }}
+
+- name: Verify the target has no interactive or group access mappings
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      SELECT
+        c.id,
+        c.is_default,
+        c.task_server_user_id,
+        c.dbhost,
+        c.dbport,
+        c.dbname,
+        c.dbuser,
+        c.name,
+        (SELECT count(*) FROM auth.clients_users WHERE client_id = c.id) AS target_users,
+        (SELECT count(*) FROM auth.clients_groups WHERE client_id = c.id) AS target_groups,
+        (SELECT count(*) FROM auth.clients
+          WHERE dbname = %(target_db)s OR name = %(target_name)s) AS matching_target_clients
+      FROM auth.clients c
+      WHERE c.id = %(target_id)s;
+    named_args:
+      target_id: "{{ datev_skr04_target_client_id | int }}"
+      target_db: "{{ datev_skr04_target_db }}"
+      target_name: "{{ datev_skr04_target_client_name }}"
+  register: datev_skr04_auth_verification
+  changed_when: false
+
+- name: Assert the target client remains fully quarantined
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_target_client_insert.query_result | length == 1
+      - datev_skr04_auth_verification.query_result | length == 1
+      - datev_skr04_auth_verification.query_result[0].target_users | int == 0
+      - datev_skr04_auth_verification.query_result[0].target_groups | int == 0
+      - datev_skr04_auth_verification.query_result[0].matching_target_clients | int == 1
+      - not (datev_skr04_auth_verification.query_result[0].is_default | bool)
+      - datev_skr04_auth_verification.query_result[0].task_server_user_id is none
+      - datev_skr04_auth_verification.query_result[0].dbhost == datev_skr04_db_host
+      - datev_skr04_auth_verification.query_result[0].dbport | string == datev_skr04_db_port | string
+      - datev_skr04_auth_verification.query_result[0].dbname == datev_skr04_target_db
+      - datev_skr04_auth_verification.query_result[0].dbuser == datev_skr04_db_user
+      - datev_skr04_auth_verification.query_result[0].name == datev_skr04_target_client_name
+    fail_msg: >-
+      The target auth client is not a unique, mapping-free, non-default,
+      task-server-free quarantine entry or points at an unexpected endpoint.
+
+- name: Confirm that access and document storage remain deferred
+  ansible.builtin.debug:
+    msg: >-
+      The target has no user/group access mappings and no WebDAV directory or
+      link. Access and document storage remain deferred to a later reviewed stage.

@@ -1,0 +1,54 @@
+---
+# Safe defaults for the parallel SKR04 dataset preparation. Real client data
+# belongs in the ignored datev-skr04.local.yml file (preferably encrypted with
+# Ansible Vault) and must never be committed.
+datev_skr04_mode: preflight
+
+datev_skr04_apply_token: CREATE_PARALLEL_SKR04_DATASET
+datev_skr04_apply_confirmation: ""
+
+datev_skr04_source_db: ""
+datev_skr04_target_db: ""
+datev_skr04_target_client_name: ""
+datev_skr04_auth_db: "{{ kivitendo_db_name }}"
+datev_skr04_db_host: "{{ kivitendo_db_host }}"
+datev_skr04_db_port: "{{ kivitendo_db_port }}"
+datev_skr04_db_user: "{{ kivitendo_db_user }}"
+datev_skr04_db_password: "{{ kivitendo_db_password }}"
+
+datev_skr04_expected_source_coa: Germany-DATEV-SKR03EU
+datev_skr04_target_coa: Germany-DATEV-SKR04EU
+datev_skr04_expected_source_fingerprint: ""
+
+datev_skr04_closed_to: "2026-07-12"
+datev_skr04_fiscal_year_start: "2026-07-13"
+datev_skr04_account_length: 4
+datev_skr04_default_currency: EUR
+datev_skr04_precision: "0.01"
+datev_skr04_accounting_method: cash
+datev_skr04_profit_determination: income
+datev_skr04_inventory_system: periodic
+datev_skr04_feature_balance: false
+datev_skr04_feature_datev: true
+datev_skr04_feature_erfolgsrechnung: false
+datev_skr04_feature_eurechnung: true
+datev_skr04_feature_ustva: true
+
+datev_skr04_consultant_number: ""
+datev_skr04_client_number: ""
+# Optional reservation for the later master-data migration. With four-digit
+# general-ledger accounts, a DATEV debtor/creditor account is five digits.
+datev_skr04_initial_debtor_number: ""
+
+# These safeguards are deliberately not optional for apply. Preflight rejects
+# any override that disables complete local snapshots or source quiescing.
+datev_skr04_backup_root: /var/backups/kivitendo/datev-skr04
+datev_skr04_backup_documents: true
+datev_skr04_quiesce_source: true
+
+datev_skr04_sidecar_config_dir: /etc/kivitendo
+datev_skr04_sidecar_config_file: >-
+  {{ datev_skr04_sidecar_config_dir }}/datev-buchungsdatenservice-{{ datev_skr04_target_db }}.yml
+# The pinned native exporter cannot represent the 2026 short fiscal year and
+# must not be used for production transfer.
+datev_skr04_native_export_allowed: false

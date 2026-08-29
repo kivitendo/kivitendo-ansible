@@ -1,0 +1,301 @@
+---
+- name: Verify the target database as PostgreSQL superuser
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_target_db }}"
+    query: |
+      SELECT
+        d.coa,
+        d.closedto::text AS closed_to,
+        d.accounting_method,
+        d.profit_determination,
+        d.feature_datev,
+        (SELECT count(*)::bigint FROM chart WHERE charttype = 'A') AS account_count,
+        (SELECT count(*)::bigint FROM chart WHERE charttype = 'A' AND accno !~ '^[0-9]{4}$') AS invalid_account_count,
+        (SELECT count(*)::bigint FROM chart WHERE accno IN ('1200', '3806', '4400')) AS required_skr04_accounts,
+        (SELECT count(*)::bigint FROM customer) AS customer_count,
+        (SELECT count(*)::bigint FROM vendor) AS vendor_count,
+        (SELECT count(*)::bigint FROM parts) AS parts_count,
+        (SELECT count(*)::bigint FROM oe) AS oe_count,
+        (SELECT count(*)::bigint FROM orderitems) AS orderitems_count,
+        (SELECT count(*)::bigint FROM delivery_orders) AS delivery_orders_count,
+        (SELECT count(*)::bigint FROM delivery_order_items) AS delivery_order_items_count,
+        (SELECT count(*)::bigint FROM ar) AS ar_count,
+        (SELECT count(*)::bigint FROM ap) AS ap_count,
+        (SELECT count(*)::bigint FROM gl) AS gl_count,
+        (SELECT count(*)::bigint FROM invoice) AS invoice_item_count,
+        (SELECT count(*)::bigint FROM acc_trans) AS acc_trans_count,
+        (SELECT count(*)::bigint FROM bank_transactions) AS bank_transactions_count,
+        (SELECT count(*)::bigint FROM datev) AS datev_rows,
+        (SELECT beraternr FROM datev LIMIT 1) AS consultant_number,
+        (SELECT mandantennr FROM datev LIMIT 1) AS client_number,
+        (SELECT count(*)::bigint FROM datev_skr04_migration_marker) AS marker_rows,
+        (SELECT marker_key FROM datev_skr04_migration_marker LIMIT 1) AS marker_key,
+        (SELECT run_id FROM datev_skr04_migration_marker LIMIT 1) AS marker_run_id,
+        (SELECT source_database FROM datev_skr04_migration_marker LIMIT 1) AS marker_source_database,
+        (SELECT target_database FROM datev_skr04_migration_marker LIMIT 1) AS marker_target_database
+      FROM defaults d
+      LIMIT 1;
+  register: datev_skr04_target_verification
+  changed_when: false
+  no_log: true
+
+- name: Assert the target is a pristine, run-bound four-digit SKR04 dataset
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_target_verification.query_result | length == 1
+      - datev_skr04_target_verification.query_result[0].coa == datev_skr04_target_coa
+      - datev_skr04_target_verification.query_result[0].closed_to == datev_skr04_closed_to
+      - datev_skr04_target_verification.query_result[0].accounting_method == datev_skr04_accounting_method
+      - datev_skr04_target_verification.query_result[0].profit_determination == datev_skr04_profit_determination
+      - datev_skr04_target_verification.query_result[0].feature_datev | bool
+      - datev_skr04_target_verification.query_result[0].account_count | int > 200
+      - datev_skr04_target_verification.query_result[0].invalid_account_count | int == 0
+      - datev_skr04_target_verification.query_result[0].required_skr04_accounts | int == 3
+      - datev_skr04_target_verification.query_result[0].customer_count | int == 0
+      - datev_skr04_target_verification.query_result[0].vendor_count | int == 0
+      - datev_skr04_target_verification.query_result[0].parts_count | int == 0
+      - datev_skr04_target_verification.query_result[0].oe_count | int == 0
+      - datev_skr04_target_verification.query_result[0].orderitems_count | int == 0
+      - datev_skr04_target_verification.query_result[0].delivery_orders_count | int == 0
+      - datev_skr04_target_verification.query_result[0].delivery_order_items_count | int == 0
+      - datev_skr04_target_verification.query_result[0].ar_count | int == 0
+      - datev_skr04_target_verification.query_result[0].ap_count | int == 0
+      - datev_skr04_target_verification.query_result[0].gl_count | int == 0
+      - datev_skr04_target_verification.query_result[0].invoice_item_count | int == 0
+      - datev_skr04_target_verification.query_result[0].acc_trans_count | int == 0
+      - datev_skr04_target_verification.query_result[0].bank_transactions_count | int == 0
+      - datev_skr04_target_verification.query_result[0].datev_rows | int == 1
+      - datev_skr04_target_verification.query_result[0].consultant_number | string == datev_skr04_consultant_number | string
+      - datev_skr04_target_verification.query_result[0].client_number | string == datev_skr04_client_number | string
+      - datev_skr04_target_verification.query_result[0].marker_rows | int == 1
+      - datev_skr04_target_verification.query_result[0].marker_key == 'kivitendo-datev-skr04-v1'
+      - datev_skr04_target_verification.query_result[0].marker_run_id == datev_skr04_run_id
+      - datev_skr04_target_verification.query_result[0].marker_source_database == datev_skr04_source_db
+      - datev_skr04_target_verification.query_result[0].marker_target_database == datev_skr04_target_db
+    fail_msg: >-
+      Target verification failed. The dataset is not a pristine, run-bound
+      four-digit SKR04 client with the approved fiscal boundary and DATEV identifiers.
+  no_log: true
+
+- name: Read the target-specific sidecar contract for final verification
+  ansible.builtin.slurp:
+    src: "{{ datev_skr04_sidecar_config_file }}"
+  register: datev_skr04_verified_sidecar_contract
+  no_log: true
+
+- name: Parse the target-specific sidecar contract
+  ansible.builtin.set_fact:
+    datev_skr04_verified_sidecar_payload: >-
+      {{ datev_skr04_verified_sidecar_contract.content | b64decode | from_yaml }}
+  no_log: true
+
+- name: Assert exact sidecar ownership and transfer-contract values
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_verified_sidecar_payload is mapping
+      - datev_skr04_verified_sidecar_payload.version | int == 2
+      - datev_skr04_verified_sidecar_payload.workflow_marker == 'kivitendo-datev-skr04-v1'
+      - datev_skr04_verified_sidecar_payload.migration_run_id == datev_skr04_run_id
+      - datev_skr04_verified_sidecar_payload.source_database == datev_skr04_source_db
+      - datev_skr04_verified_sidecar_payload.target_database == datev_skr04_target_db
+      - datev_skr04_verified_sidecar_payload.kivitendo_database == datev_skr04_target_db
+      - datev_skr04_verified_sidecar_payload.chart_of_accounts == datev_skr04_target_coa
+      - datev_skr04_verified_sidecar_payload.datev_chart_code | string == '04'
+      - datev_skr04_verified_sidecar_payload.account_length | int == datev_skr04_account_length | int
+      - datev_skr04_verified_sidecar_payload.fiscal_year_start_2026 == datev_skr04_fiscal_year_start
+      - datev_skr04_verified_sidecar_payload.closed_through == datev_skr04_closed_to
+      - datev_skr04_verified_sidecar_payload.consultant_number | string == datev_skr04_consultant_number | string
+      - datev_skr04_verified_sidecar_payload.client_number | string == datev_skr04_client_number | string
+      - not (datev_skr04_verified_sidecar_payload.native_kivitendo_export_allowed | bool)
+      - datev_skr04_verified_sidecar_payload.required_extf_main_version | int == 700
+      - datev_skr04_verified_sidecar_payload.required_booking_batch_version | int == 13
+    fail_msg: >-
+      The target-specific DATEV sidecar contract is missing, malformed, has
+      different ownership or does not carry the approved transfer parameters.
+  no_log: true
+
+- name: Verify application-role connectivity to the target
+  community.postgresql.postgresql_ping:
+    login_host: "{{ datev_skr04_db_host }}"
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_target_db }}"
+    login_user: "{{ datev_skr04_db_user }}"
+    login_password: "{{ datev_skr04_effective_db_password }}"
+  register: datev_skr04_target_ping
+  no_log: true
+
+- name: Assert application-role connectivity succeeded
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_target_ping.is_available | bool
+    fail_msg: The configured kivitendo database role cannot open the target database.
+  no_log: true
+
+- name: Verify database ownership and absence of persistent elevation
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: postgres
+    query: |
+      SELECT
+        d.datname,
+        pg_get_userbyid(d.datdba) AS owner,
+        r.rolsuper AS application_role_is_superuser,
+        EXISTS (
+          SELECT 1 FROM pg_roles
+          WHERE rolname LIKE 'kivi_migrate_%'
+        ) AS temporary_roles_remain
+      FROM pg_database d
+      JOIN pg_roles r ON r.rolname = %(db_user)s
+      WHERE d.datname = %(target_db)s;
+    named_args:
+      db_user: "{{ datev_skr04_db_user }}"
+      target_db: "{{ datev_skr04_target_db }}"
+  register: datev_skr04_ownership_verification
+  changed_when: false
+
+- name: Assert ownership is stable and no elevated role remains
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_ownership_verification.query_result | length == 1
+      - datev_skr04_ownership_verification.query_result[0].owner == datev_skr04_db_user
+      - not (datev_skr04_ownership_verification.query_result[0].application_role_is_superuser | bool)
+      - not (datev_skr04_ownership_verification.query_result[0].temporary_roles_remain | bool)
+    fail_msg: >-
+      The target ownership or PostgreSQL role state violates the post-migration
+      least-privilege requirement.
+
+- name: Verify target quarantine and source authentication mapping immutability
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      SELECT
+        c.id,
+        c.name,
+        c.dbname,
+        c.is_default,
+        c.task_server_user_id,
+        (SELECT md5(row_to_json(sc)::text) FROM auth.clients sc
+          WHERE sc.id = %(source_id)s AND sc.dbname = %(source_db)s) AS source_client_digest,
+        (SELECT count(*) FROM auth.clients_users WHERE client_id = c.id) AS target_users,
+        (SELECT count(*) FROM auth.clients_groups WHERE client_id = c.id) AS target_groups,
+        (SELECT count(*) FROM auth.clients_users WHERE client_id = %(source_id)s) AS source_users,
+        (SELECT COALESCE(md5(string_agg(cu.user_id::text, ',' ORDER BY cu.user_id)), md5(''))
+           FROM auth.clients_users cu WHERE cu.client_id = %(source_id)s) AS source_users_digest,
+        (SELECT count(*) FROM auth.clients_groups WHERE client_id = %(source_id)s) AS source_groups,
+        (SELECT COALESCE(md5(string_agg(cg.group_id::text, ',' ORDER BY cg.group_id)), md5(''))
+           FROM auth.clients_groups cg WHERE cg.client_id = %(source_id)s) AS source_groups_digest,
+        (SELECT count(*) FROM auth.clients
+          WHERE dbname = %(target_db)s OR name = %(target_name)s) AS matching_target_clients
+      FROM auth.clients c
+      WHERE c.id = %(target_id)s;
+    named_args:
+      source_id: "{{ datev_skr04_source_client_id | int }}"
+      source_db: "{{ datev_skr04_source_db }}"
+      target_id: "{{ datev_skr04_target_client_id | int }}"
+      target_db: "{{ datev_skr04_target_db }}"
+      target_name: "{{ datev_skr04_target_client_name }}"
+  register: datev_skr04_final_auth_verification
+  changed_when: false
+
+- name: Assert the target remains inaccessible and source mappings are unchanged
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_final_auth_verification.query_result | length == 1
+      - datev_skr04_final_auth_verification.query_result[0].name == datev_skr04_target_client_name
+      - datev_skr04_final_auth_verification.query_result[0].dbname == datev_skr04_target_db
+      - not (datev_skr04_final_auth_verification.query_result[0].is_default | bool)
+      - datev_skr04_final_auth_verification.query_result[0].task_server_user_id is none
+      - datev_skr04_final_auth_verification.query_result[0].target_users | int == 0
+      - datev_skr04_final_auth_verification.query_result[0].target_groups | int == 0
+      - datev_skr04_final_auth_verification.query_result[0].matching_target_clients | int == 1
+      - datev_skr04_final_auth_verification.query_result[0].source_client_digest == datev_skr04_source_client_digest_before
+      - datev_skr04_final_auth_verification.query_result[0].source_users | int == datev_skr04_source_user_count_before | int
+      - datev_skr04_final_auth_verification.query_result[0].source_users_digest == datev_skr04_source_user_digest_before
+      - datev_skr04_final_auth_verification.query_result[0].source_groups | int == datev_skr04_source_group_count_before | int
+      - datev_skr04_final_auth_verification.query_result[0].source_groups_digest == datev_skr04_source_group_digest_before
+    fail_msg: >-
+      The target gained interactive access, default/task-server ownership or the
+      protected source authentication mappings changed during preparation.
+
+- name: Re-read the source after all target-only operations
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_source_db }}"
+    query: "{{ datev_skr04_source_fingerprint_query }}"
+  register: datev_skr04_final_source_fingerprint_raw
+  changed_when: false
+
+- name: Calculate the final source fingerprint
+  ansible.builtin.set_fact:
+    datev_skr04_final_source_fingerprint: >-
+      {{ datev_skr04_final_source_fingerprint_raw.query_result[0]
+         | to_json
+         | hash('sha256') }}
+
+- name: Prove that the source mandant was not changed
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_final_source_fingerprint == datev_skr04_snapshot_fingerprint
+      - datev_skr04_final_source_fingerprint == datev_skr04_expected_source_fingerprint
+    fail_msg: >-
+      The source fingerprint changed. The target is not released for use and
+      the source must be restored or investigated from the captured snapshots.
+
+- name: Write the protected verification report
+  ansible.builtin.copy:
+    dest: "{{ datev_skr04_backup_directory }}/verification.yml"
+    owner: postgres
+    group: postgres
+    mode: "0600"
+    content: |
+      version: 3
+      run_id: "{{ datev_skr04_run_id }}"
+      verified_at: "{{ ansible_facts.date_time.iso8601 }}"
+      source_database: "{{ datev_skr04_source_db }}"
+      source_client_id: {{ datev_skr04_source_client_id }}
+      source_fingerprint_before: "{{ datev_skr04_snapshot_fingerprint }}"
+      source_fingerprint_after: "{{ datev_skr04_final_source_fingerprint }}"
+      source_unchanged: true
+      source_auth_client_unchanged: true
+      source_auth_user_mappings_unchanged: true
+      source_auth_group_mappings_unchanged: true
+      target_database: "{{ datev_skr04_target_db }}"
+      target_client_id: {{ datev_skr04_target_client_id }}
+      target_client_name: "{{ datev_skr04_target_client_name }}"
+      target_marker_key: "kivitendo-datev-skr04-v1"
+      target_marker_run_id: "{{ datev_skr04_run_id }}"
+      target_is_default: false
+      target_task_server_enabled: false
+      target_user_mappings: 0
+      target_group_mappings: 0
+      target_access_quarantined: true
+      target_business_tables_empty: true
+      chart_of_accounts: "{{ datev_skr04_target_coa }}"
+      account_length: {{ datev_skr04_account_length }}
+      closed_through: "{{ datev_skr04_closed_to }}"
+      fiscal_year_start_2026: "{{ datev_skr04_fiscal_year_start }}"
+      consultant_number: "{{ datev_skr04_consultant_number }}"
+      client_number: "{{ datev_skr04_client_number }}"
+      sidecar_config_file: "{{ datev_skr04_sidecar_config_file }}"
+      sidecar_workflow_marker: "kivitendo-datev-skr04-v1"
+      sidecar_run_owned: true
+      business_transactions_migrated: false
+      access_cutover_performed: false
+      production_cutover_performed: false
+      native_datev_export_allowed: false
+  no_log: true
+
+- name: Mark the quarantined parallel client ready for controlled migration work
+  ansible.builtin.set_fact:
+    datev_skr04_parallel_client_ready: true
+
+- name: Report the enforced stopping point
+  ansible.builtin.debug:
+    msg:
+      - "Quarantined parallel SKR04 client {{ datev_skr04_target_client_name }} verified successfully."
+      - "The source client remains unchanged and continues to be the current production record."
+      - "The target has no user/group access mappings, no task server and no WebDAV provisioning."
+      - "No customer, vendor, article, order, delivery, invoice, posting, bank transaction, access, default-client or task-server cutover was performed."
+      - "Verification report: {{ datev_skr04_backup_directory }}/verification.yml"
