@@ -1,0 +1,70 @@
+---
+- name: Read every configured target default after native initialization
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_target_db }}"
+    query: |
+      SELECT
+        count(*) OVER ()::integer AS defaults_rows,
+        d.precision::text AS precision,
+        d.precision::numeric = %(expected_precision)s::numeric AS precision_matches,
+        d.accounting_method,
+        d.profit_determination,
+        d.inventory_system,
+        c.name AS default_currency,
+        d.feature_balance,
+        d.feature_datev,
+        d.feature_erfolgsrechnung,
+        d.feature_eurechnung,
+        d.feature_ustva,
+        d.datev_check_on_sales_invoice,
+        d.datev_check_on_purchase_invoice,
+        d.datev_check_on_ar_transaction,
+        d.datev_check_on_ap_transaction,
+        d.datev_check_on_gl_transaction
+      FROM defaults d
+      LEFT JOIN currencies c ON c.id = d.currency_id;
+    named_args:
+      expected_precision: "{{ datev_skr04_precision }}"
+  register: datev_skr04_all_target_defaults
+  changed_when: false
+  no_log: true
+
+- name: Assert every declared target default was applied exactly
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_all_target_defaults.query_result | length == 1
+      - datev_skr04_all_target_defaults.query_result[0].defaults_rows | int == 1
+      - datev_skr04_all_target_defaults.query_result[0].default_currency == datev_skr04_default_currency
+      - datev_skr04_all_target_defaults.query_result[0].precision_matches | bool
+      - datev_skr04_all_target_defaults.query_result[0].accounting_method == datev_skr04_accounting_method
+      - datev_skr04_all_target_defaults.query_result[0].profit_determination == datev_skr04_profit_determination
+      - datev_skr04_all_target_defaults.query_result[0].inventory_system == datev_skr04_inventory_system
+      - (datev_skr04_all_target_defaults.query_result[0].feature_balance | bool) == (datev_skr04_feature_balance | bool)
+      - (datev_skr04_all_target_defaults.query_result[0].feature_datev | bool) == (datev_skr04_feature_datev | bool)
+      - (datev_skr04_all_target_defaults.query_result[0].feature_erfolgsrechnung | bool) == (datev_skr04_feature_erfolgsrechnung | bool)
+      - (datev_skr04_all_target_defaults.query_result[0].feature_eurechnung | bool) == (datev_skr04_feature_eurechnung | bool)
+      - (datev_skr04_all_target_defaults.query_result[0].feature_ustva | bool) == (datev_skr04_feature_ustva | bool)
+      - datev_skr04_all_target_defaults.query_result[0].datev_check_on_sales_invoice | bool
+      - datev_skr04_all_target_defaults.query_result[0].datev_check_on_purchase_invoice | bool
+      - datev_skr04_all_target_defaults.query_result[0].datev_check_on_ar_transaction | bool
+      - datev_skr04_all_target_defaults.query_result[0].datev_check_on_ap_transaction | bool
+      - datev_skr04_all_target_defaults.query_result[0].datev_check_on_gl_transaction | bool
+    fail_msg: >-
+      Native initialization or subsequent target configuration did not apply
+      every declared currency, precision, accounting, inventory, feature and
+      DATEV validation default exactly. The quarantined target remains blocked.
+  no_log: true
+
+- name: Bind the complete target-default verification to this run
+  ansible.builtin.set_fact:
+    datev_skr04_target_defaults_verification:
+      verified: true
+      run_id: "{{ datev_skr04_run_id }}"
+      target_database: "{{ datev_skr04_target_db }}"
+      currency: "{{ datev_skr04_default_currency }}"
+      precision: "{{ datev_skr04_precision }}"
+      inventory_system: "{{ datev_skr04_inventory_system }}"
+  no_log: true
