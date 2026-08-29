@@ -17,6 +17,14 @@
         - always
         - preflight
 
+    - name: Bind Unix-socket and TCP operations to one PostgreSQL cluster
+      ansible.builtin.include_tasks: tasks/datev_skr04/postgresql_cluster_contract.yml
+      vars:
+        datev_skr04_cluster_contract_phase: preflight
+      tags:
+        - always
+        - preflight
+
     - name: Run the read-only and fail-closed preflight
       ansible.builtin.include_tasks: tasks/datev_skr04/preflight.yml
       tags:
@@ -36,8 +44,20 @@
         - preflight
 
     - name: Create and verify the parallel SKR04 client
-      when: datev_skr04_mode == 'apply'
+      when:
+        - datev_skr04_mode == 'apply'
+        - (datev_skr04_cluster_contract | default({})).get('verified', false) | bool
+        - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'preflight'
+        - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_bound_system_identifier
       block:
+        - name: Revalidate the bound PostgreSQL cluster before snapshots
+          ansible.builtin.include_tasks: tasks/datev_skr04/postgresql_cluster_contract.yml
+          vars:
+            datev_skr04_cluster_contract_phase: pre_snapshot
+
+        - name: Derive and reserve the exact native staging namespace before interruption
+          ansible.builtin.include_tasks: tasks/datev_skr04/derive_staging_identity.yml
+
         - name: Capture mandatory source, auth, installation and document snapshots
           ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
 
@@ -126,8 +146,9 @@
                   backup_directory: "{{ datev_skr04_snapshot_gate_directory }}"
                   source_fingerprint: "{{ datev_skr04_snapshot_fingerprint }}"
                   manifest_sha256: "{{ datev_skr04_snapshot_gate_files.results[4].stat.checksum }}"
+                  postgresql_system_identifier: "{{ datev_skr04_bound_system_identifier }}"
 
-            - name: Assert the snapshot-complete gate is bound to this run
+            - name: Assert the snapshot-complete gate is bound to this run and cluster
               ansible.builtin.assert:
                 that:
                   - datev_skr04_snapshot_complete is mapping
@@ -135,21 +156,47 @@
                   - datev_skr04_snapshot_complete.backup_directory == datev_skr04_snapshot_gate_directory
                   - datev_skr04_snapshot_complete.source_fingerprint == datev_skr04_expected_source_fingerprint
                   - datev_skr04_snapshot_complete.manifest_sha256 == datev_skr04_snapshot_gate_files.results[4].stat.checksum
+                  - datev_skr04_snapshot_complete.postgresql_system_identifier == datev_skr04_bound_system_identifier
                 fail_msg: >-
-                  The snapshot-complete gate was not established for this run.
-                  All target operations remain blocked.
+                  The snapshot-complete gate was not established for this run
+                  and PostgreSQL cluster. All target operations remain blocked.
 
         - name: Run target-only operations after the snapshot-complete gate
           when:
             - (datev_skr04_snapshot_complete | default({})).get('run_id', '') == datev_skr04_run_id
             - (datev_skr04_snapshot_complete | default({})).get('source_fingerprint', '') == datev_skr04_expected_source_fingerprint
             - (datev_skr04_snapshot_complete | default({})).get('backup_directory', '') == datev_skr04_snapshot_gate_directory
+            - (datev_skr04_snapshot_complete | default({})).get('postgresql_system_identifier', '') == datev_skr04_bound_system_identifier
           block:
+            - name: Revalidate the bound PostgreSQL cluster immediately before creation
+              ansible.builtin.include_tasks: tasks/datev_skr04/postgresql_cluster_contract.yml
+              vars:
+                datev_skr04_cluster_contract_phase: pre_create
+
+            - name: Assert the final cluster gate is still bound to this run
+              ansible.builtin.assert:
+                that:
+                  - (datev_skr04_cluster_contract | default({})).get('verified', false) | bool
+                  - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'pre_create'
+                  - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_snapshot_complete.postgresql_system_identifier
+                fail_msg: >-
+                  The final PostgreSQL cluster identity was not revalidated
+                  against the snapshot-bound system. Target creation is blocked.
+
             - name: Revalidate all live creation inputs after snapshotting
               ansible.builtin.include_tasks: tasks/datev_skr04/pre_create_integrity.yml
 
-            - name: Initialize the isolated SKR04 database
-              ansible.builtin.include_tasks: tasks/datev_skr04/create.yml
+            - name: Initialize the isolated SKR04 database with guaranteed privilege cleanup
+              block:
+                - name: Run the native isolated SKR04 initializer
+                  ansible.builtin.include_tasks: tasks/datev_skr04/create.yml
+              always:
+                - name: Complete evidence-preserving temporary-elevation cleanup
+                  ansible.builtin.include_tasks: tasks/datev_skr04/post_create_ephemeral_cleanup.yml
+                  when: datev_skr04_ephemeral_role is defined
+
+            - name: Verify every configured target default
+              ansible.builtin.include_tasks: tasks/datev_skr04/verify_target_defaults.yml
 
             - name: Register a quarantined non-default client without access mappings
               ansible.builtin.include_tasks: tasks/datev_skr04/register.yml
@@ -165,8 +212,8 @@
               - "Backup directory: {{ datev_skr04_backup_directory | default('not-created') }}"
               - >-
                 No automatic deletion or rollback was attempted. Any partial
-                target database, authentication row or sidecar contract remains
-                quarantined for evidence-preserving inspection.
+                target or staging database, authentication row or sidecar
+                contract remains quarantined for evidence-preserving inspection.
 
         - name: Terminate the failed migration without destructive cleanup
           ansible.builtin.fail:
@@ -181,14 +228,22 @@
         that:
           - datev_skr04_parallel_client_ready | default(false) | bool
           - datev_skr04_final_evidence_ready | default(false) | bool
+          - (datev_skr04_target_defaults_verification | default({})).get('verified', false) | bool
+          - (datev_skr04_target_defaults_verification | default({})).get('run_id', '') == datev_skr04_run_id
+          - (datev_skr04_target_defaults_verification | default({})).get('target_database', '') == datev_skr04_target_db
+          - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'pre_create'
+          - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_bound_system_identifier
         fail_msg: >-
-          Apply mode did not complete target and evidence verification. No
-          access, master-data migration or production cutover is allowed.
+          Apply mode did not complete target, complete-default, cluster and
+          evidence verification. No access, master-data migration or production
+          cutover is allowed.
       when: datev_skr04_mode == 'apply'
 
     - name: Confirm that preflight made no changes
       ansible.builtin.debug:
         msg: >-
-          Read-only preflight complete. No target database, auth client, posting,
-          customer, invoice, default-client or task-server change was made.
+          Read-only preflight complete. The document store and socket/TCP
+          PostgreSQL cluster binding were verified. No target or staging
+          database, auth client, posting, customer, invoice, default-client or
+          task-server change was made.
       when: datev_skr04_mode == 'preflight'
