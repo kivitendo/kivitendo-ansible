@@ -112,45 +112,8 @@ my ($already_exists) = $admin_dbh->selectrow_array(
   undef,
   $target_db,
 );
-die "Target database already exists; refusing to modify it\n" if $already_exists;
-
-my $quoted_target = $admin_dbh->quote_identifier($target_db);
-my $quoted_owner  = $admin_dbh->quote_identifier($db_user);
-$admin_dbh->do(
-  "CREATE DATABASE $quoted_target OWNER $quoted_owner TEMPLATE template1 ENCODING 'UTF8'",
-);
 $admin_dbh->disconnect;
-
-my $target_dsn = "dbi:Pg:dbname=$target_db;host=$db_host;port=$db_port";
-my $marker_dbh = DBI->connect(
-  $target_dsn,
-  $db_user,
-  $db_password,
-  { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
-);
-$marker_dbh->do(q{
-  CREATE TABLE datev_skr04_migration_marker (
-    marker_key text PRIMARY KEY,
-    run_id text NOT NULL,
-    source_database text NOT NULL,
-    target_database text NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    CHECK (marker_key = 'kivitendo-datev-skr04-v1')
-  )
-});
-$marker_dbh->do(
-  q{
-    INSERT INTO datev_skr04_migration_marker
-      (marker_key, run_id, source_database, target_database)
-    VALUES (?, ?, ?, ?)
-  },
-  undef,
-  $marker_key,
-  $run_id,
-  $source_db,
-  $target_db,
-);
-$marker_dbh->disconnect;
+die "Target database already exists; refusing to modify it\n" if $already_exists;
 
 SL::LxOfficeConf->read;
 $::lxdebug = LXDebug->new;
@@ -218,13 +181,49 @@ if (!$created) {
   die "kivitendo dataset creation failed: $error";
 }
 
+my $target_dsn = "dbi:Pg:dbname=$target_db;host=$db_host;port=$db_port";
 my $target_dbh = DBI->connect(
   $target_dsn,
   $db_user,
   $db_password,
-  { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
+  { AutoCommit => 0, RaiseError => 1, PrintError => 0 },
 );
-my ($installed_coa) = $target_dbh->selectrow_array('SELECT coa FROM defaults LIMIT 1');
+
+my $marker_created = eval {
+  $target_dbh->do(q{
+    CREATE TABLE datev_skr04_migration_marker (
+      marker_key text PRIMARY KEY,
+      run_id text NOT NULL,
+      source_database text NOT NULL,
+      target_database text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      CHECK (marker_key = 'kivitendo-datev-skr04-v1')
+    )
+  });
+  $target_dbh->do(
+    q{
+      INSERT INTO datev_skr04_migration_marker
+        (marker_key, run_id, source_database, target_database)
+      VALUES (?, ?, ?, ?)
+    },
+    undef,
+    $marker_key,
+    $run_id,
+    $source_db,
+    $target_db,
+  );
+  $target_dbh->commit;
+  1;
+};
+if (!$marker_created) {
+  my $error = $@ || 'unknown ownership-marker error';
+  eval { $target_dbh->rollback };
+  $target_dbh->disconnect;
+  die "native dataset was created but run ownership could not be recorded: $error";
+}
+
+my ($defaults_rows) = $target_dbh->selectrow_array('SELECT count(*) FROM defaults');
+my ($installed_coa) = $target_dbh->selectrow_array('SELECT coa FROM defaults');
 my ($account_count)  = $target_dbh->selectrow_array(
   q{SELECT count(*) FROM chart WHERE charttype = 'A'},
 );
@@ -242,6 +241,8 @@ my $marker = $target_dbh->selectrow_hashref(
 );
 $target_dbh->disconnect;
 
+die "Created dataset has an ambiguous defaults state\n"
+  if !defined($defaults_rows) || $defaults_rows != 1;
 die "Created dataset has unexpected chart of accounts\n"
   if !defined($installed_coa) || $installed_coa ne $chart;
 die "Created dataset contains no general-ledger accounts\n"
