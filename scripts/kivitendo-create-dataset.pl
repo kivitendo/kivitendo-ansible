@@ -13,6 +13,7 @@ BEGIN {
 
 use CGI qw();
 use DBI;
+use Digest::SHA qw(sha256_hex);
 use SL::Form;
 use SL::Layout::None;
 use SL::Locale;
@@ -80,11 +81,18 @@ my $superuser_pass   = required_env('KIVITENDO_SUPERUSER_PASSWORD');
 my $default_currency = optional_env('KIVITENDO_DEFAULT_CURRENCY', 'EUR');
 my $precision        = optional_env('KIVITENDO_PRECISION', '0.01');
 my $marker_key       = 'kivitendo-datev-skr04-v1';
+my $staging_db       = 'kivi_skr04_stage_' . substr(
+  sha256_hex(join("\0", $run_id, $target_db)),
+  0,
+  24,
+);
 
 $source_db =~ /^[a-z][a-z0-9_]{2,62}$/
   or die "Unsafe source database name\n";
 $target_db =~ /^[a-z][a-z0-9_]{2,62}$/
   or die "Unsafe target database name\n";
+$staging_db =~ /^kivi_skr04_stage_[a-f0-9]{24}$/
+  or die "Unsafe staging database name\n";
 $source_db ne $target_db
   or die "Source and target database must differ\n";
 $run_id =~ /^[A-Za-z0-9][A-Za-z0-9_-]{7,95}$/
@@ -107,13 +115,22 @@ my $admin_dbh = DBI->connect(
   $db_password,
   { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
 );
-my ($already_exists) = $admin_dbh->selectrow_array(
-  'SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ?)',
+my $occupied_names = $admin_dbh->selectall_arrayref(
+  q{
+    SELECT datname
+      FROM pg_database
+     WHERE datname = ?
+        OR datname LIKE 'kivi_skr04_stage_%'
+     ORDER BY datname
+  },
   undef,
   $target_db,
 );
 $admin_dbh->disconnect;
-die "Target database already exists; refusing to modify it\n" if $already_exists;
+if (@{$occupied_names}) {
+  my $names = join(', ', map { $_->[0] } @{$occupied_names});
+  die "Target or reserved staging database already exists ($names); refusing to adopt or modify it\n";
+}
 
 SL::LxOfficeConf->read;
 $::lxdebug = LXDebug->new;
@@ -132,7 +149,7 @@ $::auth    = KivitendoMigrationAuth->new(
   dbdriver     => 'Pg',
   dbhost       => $db_host,
   dbport       => $db_port,
-  dbname       => $target_db,
+  dbname       => $staging_db,
   dbuser       => $db_user,
   dbpasswd     => $db_password,
   numberformat => '1000.00',
@@ -143,8 +160,8 @@ my %dataset = (
   dbdriver                    => 'Pg',
   dbhost                      => $db_host,
   dbport                      => $db_port,
-  db                          => $target_db,
-  dbname                      => $target_db,
+  db                          => $staging_db,
+  dbname                      => $staging_db,
   dbdefault                   => 'template1',
   dbuser                      => $db_user,
   dbpasswd                    => $db_password,
@@ -178,19 +195,19 @@ if (!$created) {
   my $error = $@ || 'unknown kivitendo dataset creation error';
   $error =~ s/\Q$db_password\E/<redacted>/g;
   $error =~ s/\Q$superuser_pass\E/<redacted>/g;
-  die "kivitendo dataset creation failed: $error";
+  die "kivitendo staging dataset creation failed: $error";
 }
 
-my $target_dsn = "dbi:Pg:dbname=$target_db;host=$db_host;port=$db_port";
-my $target_dbh = DBI->connect(
-  $target_dsn,
+my $staging_dsn = "dbi:Pg:dbname=$staging_db;host=$db_host;port=$db_port";
+my $staging_dbh = DBI->connect(
+  $staging_dsn,
   $db_user,
   $db_password,
   { AutoCommit => 0, RaiseError => 1, PrintError => 0 },
 );
 
 my $marker_created = eval {
-  $target_dbh->do(q{
+  $staging_dbh->do(q{
     CREATE TABLE datev_skr04_migration_marker (
       marker_key text PRIMARY KEY,
       run_id text NOT NULL,
@@ -200,7 +217,7 @@ my $marker_created = eval {
       CHECK (marker_key = 'kivitendo-datev-skr04-v1')
     )
   });
-  $target_dbh->do(
+  $staging_dbh->do(
     q{
       INSERT INTO datev_skr04_migration_marker
         (marker_key, run_id, source_database, target_database)
@@ -212,16 +229,43 @@ my $marker_created = eval {
     $source_db,
     $target_db,
   );
-  $target_dbh->commit;
+  $staging_dbh->commit;
   1;
 };
 if (!$marker_created) {
   my $error = $@ || 'unknown ownership-marker error';
-  eval { $target_dbh->rollback };
-  $target_dbh->disconnect;
-  die "native dataset was created but run ownership could not be recorded: $error";
+  eval { $staging_dbh->rollback };
+  $staging_dbh->disconnect;
+  die "native staging dataset was created but run ownership could not be recorded: $error";
 }
+$staging_dbh->disconnect;
 
+$admin_dbh = DBI->connect(
+  $admin_dsn,
+  $db_user,
+  $db_password,
+  { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
+);
+my $quoted_staging = $admin_dbh->quote_identifier($staging_db);
+my $quoted_target  = $admin_dbh->quote_identifier($target_db);
+my $renamed = eval {
+  $admin_dbh->do("ALTER DATABASE $quoted_staging RENAME TO $quoted_target");
+  1;
+};
+if (!$renamed) {
+  my $error = $@ || 'unknown atomic target rename error';
+  $admin_dbh->disconnect;
+  die "native staging dataset could not be atomically promoted to the unused target name: $error";
+}
+$admin_dbh->disconnect;
+
+my $target_dsn = "dbi:Pg:dbname=$target_db;host=$db_host;port=$db_port";
+my $target_dbh = DBI->connect(
+  $target_dsn,
+  $db_user,
+  $db_password,
+  { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
+);
 my ($defaults_rows) = $target_dbh->selectrow_array('SELECT count(*) FROM defaults');
 my ($installed_coa) = $target_dbh->selectrow_array('SELECT coa FROM defaults');
 my ($account_count)  = $target_dbh->selectrow_array(
@@ -255,4 +299,4 @@ die "Created dataset lost or changed its migration ownership marker\n"
   || $marker->{source_database} ne $source_db
   || $marker->{target_database} ne $target_db;
 
-print "Created isolated, run-bound SKR04 dataset '$target_db' using kivitendo's native dataset initializer.\n";
+print "Created isolated, run-bound SKR04 dataset '$target_db' through native staging initialization and atomic promotion.\n";
