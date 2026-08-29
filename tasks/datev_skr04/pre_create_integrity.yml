@@ -12,23 +12,22 @@
 - name: Prove live initializer and chart did not change after preflight and snapshot
   ansible.builtin.assert:
     that:
-      - item.stat.exists | bool
-      - item.stat.isreg | default(false) | bool
-      - not (item.stat.islnk | default(false) | bool)
-      - item.stat.readable | default(false) | bool
-      - item.stat.checksum == expected_checksum
+      - item.state.stat.exists | bool
+      - item.state.stat.isreg | default(false) | bool
+      - not (item.state.stat.islnk | default(false) | bool)
+      - item.state.stat.readable | default(false) | bool
+      - item.state.stat.checksum == item.expected_checksum
     fail_msg: >-
-      Critical live creation input {{ item.item }} changed, disappeared, became
-      unreadable or became a symlink after preflight. Target creation is blocked.
+      Critical live creation input {{ item.state.item }} changed, disappeared,
+      became unreadable or became a symlink after preflight. Target creation is
+      blocked.
   loop:
-    - item: "{{ datev_skr04_critical_live_file_states_before_create.results[0] }}"
+    - state: "{{ datev_skr04_critical_live_file_states_before_create.results[0] }}"
       expected_checksum: "{{ datev_skr04_live_user_pm_sha256 }}"
-    - item: "{{ datev_skr04_critical_live_file_states_before_create.results[1] }}"
+    - state: "{{ datev_skr04_critical_live_file_states_before_create.results[1] }}"
       expected_checksum: "{{ datev_skr04_live_skr04_chart_sha256 }}"
   loop_control:
-    label: "{{ item.item.item }}"
-  vars:
-    expected_checksum: "{{ item.expected_checksum }}"
+    label: "{{ item.state.item }}"
 
 - name: Re-read the installed kivitendo revision immediately before target creation
   ansible.builtin.command:
