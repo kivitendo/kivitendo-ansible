@@ -71,11 +71,11 @@ jobs:
             python3-venv
           rm -rf /var/lib/apt/lists/*
 
-      - name: Check out the exact workflow revision without external actions
+      - name: Check out the immutable event revision without external actions
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
-          REVISION_REF: ${{ github.ref }}
+          REVISION_SHA: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -84,9 +84,9 @@ jobs:
           git remote add origin "https://github.com/${REPOSITORY}.git"
           AUTH_HEADER="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w 0)"
           git -c http.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" \
-            fetch --no-tags --depth=1 origin "${REVISION_REF}"
+            fetch --no-tags --depth=1 origin "${REVISION_SHA}"
           git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git rev-parse HEAD)" = "${REVISION_SHA}"
 
       - name: Bootstrap the repository Ansible environment
         shell: bash
