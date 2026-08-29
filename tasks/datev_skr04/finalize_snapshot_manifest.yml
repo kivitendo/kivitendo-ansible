@@ -1,0 +1,84 @@
+---
+- name: Capture the actual snapshot-manifest finalization time
+  ansible.builtin.command:
+    argv:
+      - date
+      - --utc
+      - +%Y-%m-%dT%H:%M:%SZ
+  register: datev_skr04_snapshot_manifest_time
+  changed_when: false
+
+- name: Read the preliminary protected snapshot manifest
+  ansible.builtin.slurp:
+    src: "{{ datev_skr04_backup_directory }}/manifest.yml"
+  register: datev_skr04_snapshot_manifest_preliminary
+
+- name: Parse the preliminary snapshot manifest
+  ansible.builtin.set_fact:
+    datev_skr04_snapshot_manifest_preliminary_payload: >-
+      {{ datev_skr04_snapshot_manifest_preliminary.content | b64decode | from_yaml }}
+
+- name: Require the preliminary manifest to belong to this exact run
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_snapshot_manifest_preliminary_payload is mapping
+      - datev_skr04_snapshot_manifest_preliminary_payload.version | int == 2
+      - datev_skr04_snapshot_manifest_preliminary_payload.run_id == datev_skr04_run_id
+      - datev_skr04_snapshot_manifest_preliminary_payload.source_database == datev_skr04_source_db
+      - datev_skr04_snapshot_manifest_preliminary_payload.target_database == datev_skr04_target_db
+      - datev_skr04_snapshot_manifest_preliminary_payload.source_fingerprint == datev_skr04_snapshot_fingerprint
+      - datev_skr04_snapshot_manifest_preliminary_payload.local_files_snapshotted | bool
+      - not (datev_skr04_snapshot_manifest_preliminary_payload.source_modified_by_workflow | bool)
+    fail_msg: >-
+      The preliminary snapshot manifest is malformed or does not belong to this
+      exact source, target, fingerprint and migration run.
+
+- name: Build the finalized snapshot manifest with an actual evidence timestamp
+  ansible.builtin.set_fact:
+    datev_skr04_snapshot_manifest_final_payload: >-
+      {{
+        datev_skr04_snapshot_manifest_preliminary_payload
+        | combine(
+            {
+              'created_at': datev_skr04_snapshot_manifest_time.stdout,
+              'evidence_finalized_at': datev_skr04_snapshot_manifest_time.stdout
+            },
+            recursive=True
+          )
+      }}
+
+- name: Write the finalized manifest using YAML-safe serialization
+  ansible.builtin.copy:
+    dest: "{{ datev_skr04_backup_directory }}/manifest.yml"
+    owner: postgres
+    group: postgres
+    mode: "0600"
+    content: "{{ datev_skr04_snapshot_manifest_final_payload | to_nice_yaml(indent=2) }}"
+
+- name: Read back the finalized snapshot manifest
+  ansible.builtin.slurp:
+    src: "{{ datev_skr04_backup_directory }}/manifest.yml"
+  register: datev_skr04_snapshot_manifest_final_raw
+
+- name: Parse the finalized snapshot manifest
+  ansible.builtin.set_fact:
+    datev_skr04_snapshot_manifest_final_verified: >-
+      {{ datev_skr04_snapshot_manifest_final_raw.content | b64decode | from_yaml }}
+
+- name: Prove the finalized snapshot evidence is parseable and time-accurate
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_snapshot_manifest_final_verified is mapping
+      - datev_skr04_snapshot_manifest_final_verified.run_id == datev_skr04_run_id
+      - datev_skr04_snapshot_manifest_final_verified.source_database == datev_skr04_source_db
+      - datev_skr04_snapshot_manifest_final_verified.target_database == datev_skr04_target_db
+      - datev_skr04_snapshot_manifest_final_verified.source_fingerprint == datev_skr04_snapshot_fingerprint
+      - datev_skr04_snapshot_manifest_final_verified.created_at == datev_skr04_snapshot_manifest_time.stdout
+      - datev_skr04_snapshot_manifest_final_verified.evidence_finalized_at == datev_skr04_snapshot_manifest_time.stdout
+      - datev_skr04_snapshot_manifest_final_verified.source_dump_sha256 == datev_skr04_backup_checksums.results[0].stat.checksum
+      - datev_skr04_snapshot_manifest_final_verified.auth_dump_sha256 == datev_skr04_backup_checksums.results[1].stat.checksum
+      - datev_skr04_snapshot_manifest_final_verified.kivitendo_installation_archive_sha256 == datev_skr04_local_backup_checksums.results[0].stat.checksum
+      - datev_skr04_snapshot_manifest_final_verified.kivitendo_documents_archive_sha256 == datev_skr04_local_backup_checksums.results[1].stat.checksum
+    fail_msg: >-
+      The finalized snapshot manifest is malformed, carries a stale timestamp or
+      no longer matches the mandatory recovery artifacts.
