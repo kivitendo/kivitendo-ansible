@@ -17,6 +17,12 @@
         - always
         - preflight
 
+    - name: Bind the protected source authentication state
+      ansible.builtin.include_tasks: tasks/datev_skr04/auth_baseline.yml
+      tags:
+        - always
+        - preflight
+
     - name: Create and verify the parallel SKR04 client
       when: datev_skr04_mode == 'apply'
       block:
