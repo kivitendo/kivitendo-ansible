@@ -74,7 +74,7 @@ def main() -> int:
                 "datev_skr04_live_document_path.stdout == '/var/lib/kivitendo/documents'",
                 "follow: false",
                 "- /var/lib/kivitendo",
-                'item.stat.mode == \'0750\'",
+                "item.stat.mode == '0750'",
                 "item.stat.pw_name == kivitendo_web_user",
                 "item.stat.gr_name == kivitendo_web_group",
                 'become_user: "{{ kivitendo_web_user }}"',
