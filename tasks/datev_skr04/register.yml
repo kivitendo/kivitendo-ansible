@@ -1,5 +1,5 @@
 ---
-- name: Capture the source authentication mapping baseline
+- name: Re-read the protected source authentication state before registration
   become_user: postgres
   community.postgresql.postgresql_query:
     login_db: "{{ datev_skr04_auth_db }}"
@@ -19,29 +19,29 @@
     named_args:
       source_id: "{{ datev_skr04_source_client_id | int }}"
       source_db: "{{ datev_skr04_source_db }}"
-  register: datev_skr04_source_auth_mapping_baseline
+  register: datev_skr04_source_auth_before_registration
   changed_when: false
 
-- name: Assert the protected source auth client still exists before registration
+- name: Assert source authentication state still matches preflight
   ansible.builtin.assert:
     that:
-      - datev_skr04_source_auth_mapping_baseline.query_result | length == 1
+      - datev_skr04_source_auth_before_registration.query_result | length == 1
+      - datev_skr04_source_auth_before_registration.query_result[0].source_client_digest == datev_skr04_source_client_digest_preflight
+      - datev_skr04_source_auth_before_registration.query_result[0].source_users | int == datev_skr04_source_user_count_preflight | int
+      - datev_skr04_source_auth_before_registration.query_result[0].source_users_digest == datev_skr04_source_user_digest_preflight
+      - datev_skr04_source_auth_before_registration.query_result[0].source_groups | int == datev_skr04_source_group_count_preflight | int
+      - datev_skr04_source_auth_before_registration.query_result[0].source_groups_digest == datev_skr04_source_group_digest_preflight
     fail_msg: >-
-      The protected source auth client changed after preflight. Target
-      registration is blocked before any authentication row is inserted.
+      The protected source auth client or its access mappings changed after
+      preflight. Target registration is blocked before any auth row is inserted.
 
-- name: Store the exact source authentication mapping baseline
+- name: Carry the preflight authentication baseline into final verification
   ansible.builtin.set_fact:
-    datev_skr04_source_client_digest_before: >-
-      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_client_digest }}
-    datev_skr04_source_user_count_before: >-
-      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_users | int }}
-    datev_skr04_source_user_digest_before: >-
-      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_users_digest }}
-    datev_skr04_source_group_count_before: >-
-      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_groups | int }}
-    datev_skr04_source_group_digest_before: >-
-      {{ datev_skr04_source_auth_mapping_baseline.query_result[0].source_groups_digest }}
+    datev_skr04_source_client_digest_before: "{{ datev_skr04_source_client_digest_preflight }}"
+    datev_skr04_source_user_count_before: "{{ datev_skr04_source_user_count_preflight | int }}"
+    datev_skr04_source_user_digest_before: "{{ datev_skr04_source_user_digest_preflight }}"
+    datev_skr04_source_group_count_before: "{{ datev_skr04_source_group_count_preflight | int }}"
+    datev_skr04_source_group_digest_before: "{{ datev_skr04_source_group_digest_preflight }}"
 
 - name: Register the target as a quarantined non-default kivitendo client
   become_user: postgres
