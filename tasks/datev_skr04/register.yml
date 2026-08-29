@@ -1,40 +1,4 @@
 ---
-- name: Re-read the protected source authentication state before registration
-  become_user: postgres
-  community.postgresql.postgresql_query:
-    login_db: "{{ datev_skr04_auth_db }}"
-    query: |
-      SELECT
-        c.id,
-        md5(row_to_json(c)::text) AS source_client_digest,
-        (SELECT count(*) FROM auth.clients_users WHERE client_id = c.id) AS source_users,
-        (SELECT COALESCE(md5(string_agg(cu.user_id::text, ',' ORDER BY cu.user_id)), md5(''))
-           FROM auth.clients_users cu WHERE cu.client_id = c.id) AS source_users_digest,
-        (SELECT count(*) FROM auth.clients_groups WHERE client_id = c.id) AS source_groups,
-        (SELECT COALESCE(md5(string_agg(cg.group_id::text, ',' ORDER BY cg.group_id)), md5(''))
-           FROM auth.clients_groups cg WHERE cg.client_id = c.id) AS source_groups_digest
-      FROM auth.clients c
-      WHERE c.id = %(source_id)s
-        AND c.dbname = %(source_db)s;
-    named_args:
-      source_id: "{{ datev_skr04_source_client_id | int }}"
-      source_db: "{{ datev_skr04_source_db }}"
-  register: datev_skr04_source_auth_before_registration
-  changed_when: false
-
-- name: Assert source authentication state still matches preflight
-  ansible.builtin.assert:
-    that:
-      - datev_skr04_source_auth_before_registration.query_result | length == 1
-      - datev_skr04_source_auth_before_registration.query_result[0].source_client_digest == datev_skr04_source_client_digest_preflight
-      - datev_skr04_source_auth_before_registration.query_result[0].source_users | int == datev_skr04_source_user_count_preflight | int
-      - datev_skr04_source_auth_before_registration.query_result[0].source_users_digest == datev_skr04_source_user_digest_preflight
-      - datev_skr04_source_auth_before_registration.query_result[0].source_groups | int == datev_skr04_source_group_count_preflight | int
-      - datev_skr04_source_auth_before_registration.query_result[0].source_groups_digest == datev_skr04_source_group_digest_preflight
-    fail_msg: >-
-      The protected source auth client or its access mappings changed after
-      preflight. Target registration is blocked before any auth row is inserted.
-
 - name: Carry the preflight authentication baseline into final verification
   ansible.builtin.set_fact:
     datev_skr04_source_client_digest_before: "{{ datev_skr04_source_client_digest_preflight }}"
@@ -43,38 +7,81 @@
     datev_skr04_source_group_count_before: "{{ datev_skr04_source_group_count_preflight | int }}"
     datev_skr04_source_group_digest_before: "{{ datev_skr04_source_group_digest_preflight }}"
 
-- name: Register the target as a quarantined non-default kivitendo client
+- name: Register the quarantined target only while the exact source auth identity exists
   become_user: postgres
   community.postgresql.postgresql_query:
     login_db: "{{ datev_skr04_auth_db }}"
     query: |
-      INSERT INTO auth.clients
-        (name, dbhost, dbport, dbname, dbuser, dbpasswd, is_default, task_server_user_id)
-      SELECT
-        %(target_name)s, %(dbhost)s, %(dbport)s, %(dbname)s, %(dbuser)s,
-        %(dbpasswd)s, FALSE, NULL
-      WHERE NOT EXISTS (
-        SELECT 1 FROM auth.clients
-        WHERE dbname = %(dbname)s OR name = %(target_name)s
+      WITH locked_source AS (
+        SELECT c.id
+          FROM auth.clients c
+         WHERE c.id = %(source_id)s
+           AND c.dbname = %(source_db)s
+           AND c.dbhost = %(source_host)s
+           AND c.dbport::text = %(source_port)s
+           AND c.dbuser = %(source_user)s
+           AND md5(row_to_json(c)::text) = %(source_client_digest)s
+           AND (SELECT count(*) FROM auth.clients_users cu
+                 WHERE cu.client_id = c.id) = %(source_user_count)s
+           AND (SELECT COALESCE(md5(string_agg(cu.user_id::text, ',' ORDER BY cu.user_id)), md5(''))
+                  FROM auth.clients_users cu
+                 WHERE cu.client_id = c.id) = %(source_user_digest)s
+           AND (SELECT count(*) FROM auth.clients_groups cg
+                 WHERE cg.client_id = c.id) = %(source_group_count)s
+           AND (SELECT COALESCE(md5(string_agg(cg.group_id::text, ',' ORDER BY cg.group_id)), md5(''))
+                  FROM auth.clients_groups cg
+                 WHERE cg.client_id = c.id) = %(source_group_digest)s
+         FOR SHARE OF c
+      ), inserted AS (
+        INSERT INTO auth.clients
+          (name, dbhost, dbport, dbname, dbuser, dbpasswd, is_default, task_server_user_id)
+        SELECT
+          %(target_name)s,
+          %(target_host)s,
+          %(target_port)s,
+          %(target_db)s,
+          %(target_user)s,
+          %(target_password)s,
+          FALSE,
+          NULL
+        FROM locked_source
+        WHERE NOT EXISTS (
+          SELECT 1
+            FROM auth.clients
+           WHERE dbname = %(target_db)s
+              OR name = %(target_name)s
+        )
+        RETURNING id
       )
-      RETURNING id;
+      SELECT id FROM inserted;
     named_args:
+      source_id: "{{ datev_skr04_source_client_id | int }}"
+      source_db: "{{ datev_skr04_source_db }}"
+      source_host: "{{ datev_skr04_db_host }}"
+      source_port: "{{ datev_skr04_db_port | string }}"
+      source_user: "{{ datev_skr04_db_user }}"
+      source_client_digest: "{{ datev_skr04_source_client_digest_preflight }}"
+      source_user_count: "{{ datev_skr04_source_user_count_preflight | int }}"
+      source_user_digest: "{{ datev_skr04_source_user_digest_preflight }}"
+      source_group_count: "{{ datev_skr04_source_group_count_preflight | int }}"
+      source_group_digest: "{{ datev_skr04_source_group_digest_preflight }}"
       target_name: "{{ datev_skr04_target_client_name }}"
-      dbhost: "{{ datev_skr04_db_host }}"
-      dbport: "{{ datev_skr04_db_port | string }}"
-      dbname: "{{ datev_skr04_target_db }}"
-      dbuser: "{{ datev_skr04_db_user }}"
-      dbpasswd: "{{ datev_skr04_effective_db_password }}"
+      target_host: "{{ datev_skr04_db_host }}"
+      target_port: "{{ datev_skr04_db_port | string }}"
+      target_db: "{{ datev_skr04_target_db }}"
+      target_user: "{{ datev_skr04_db_user }}"
+      target_password: "{{ datev_skr04_effective_db_password }}"
   register: datev_skr04_target_client_insert
   no_log: true
 
-- name: Assert the target auth identity remained unused through insertion
+- name: Assert the source remained exact and the target identity remained unused through insertion
   ansible.builtin.assert:
     that:
       - datev_skr04_target_client_insert.query_result | length == 1
     fail_msg: >-
-      The target client name or database was registered concurrently after
-      preflight. No existing authentication row was adopted or modified.
+      The source auth client or its mappings changed, disappeared or no longer
+      point to the inspected local endpoint, or the target identity became used.
+      No existing auth row was adopted or modified.
   no_log: true
 
 - name: Store the quarantined target client identity
@@ -112,7 +119,6 @@
 - name: Assert the target client remains fully quarantined
   ansible.builtin.assert:
     that:
-      - datev_skr04_target_client_insert.query_result | length == 1
       - datev_skr04_auth_verification.query_result | length == 1
       - datev_skr04_auth_verification.query_result[0].target_users | int == 0
       - datev_skr04_auth_verification.query_result[0].target_groups | int == 0
