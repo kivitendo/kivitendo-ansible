@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression checks for non-bypassable SKR04 recovery and source integrity gates."""
+"""Regression checks for non-bypassable SKR04 recovery and source-integrity gates."""
 
 from __future__ import annotations
 
@@ -21,148 +21,146 @@ def require(condition: bool, message: str, failures: list[str]) -> None:
         failures.append(message)
 
 
+def has(text: str, *tokens: str) -> bool:
+    return all(token in text for token in tokens)
+
+
 def main() -> int:
     failures: list[str] = []
+    required = {
+        "playbook": "datev-skr04-migration.yml",
+        "document_store": "tasks/datev_skr04/document_store_contract.yml",
+        "strict": "tasks/datev_skr04/strict_environment.yml",
+        "fingerprint": "sql/datev-skr04-source-fingerprint.sql",
+        "workflow": ".github/workflows/validate-datev-skr04.yml",
+    }
 
-    playbook_path = ROOT / "datev-skr04-migration.yml"
-    document_store_path = ROOT / "tasks/datev_skr04/document_store_contract.yml"
-    strict_path = ROOT / "tasks/datev_skr04/strict_environment.yml"
-    fingerprint_path = ROOT / "sql/datev-skr04-source-fingerprint.sql"
-    workflow_path = ROOT / ".github/workflows/validate-datev-skr04.yml"
-
-    for path in (playbook_path, document_store_path, strict_path, fingerprint_path, workflow_path):
-        require(path.is_file(), f"missing required integrity file: {path.relative_to(ROOT)}", failures)
-
+    for relative in required.values():
+        require((ROOT / relative).is_file(), f"missing required integrity file: {relative}", failures)
     if failures:
         for failure in failures:
             print(f" - {failure}", file=sys.stderr)
         return 1
 
-    playbook = playbook_path.read_text(encoding="utf-8")
-    document_store = document_store_path.read_text(encoding="utf-8")
-    strict = strict_path.read_text(encoding="utf-8")
-    fingerprint = fingerprint_path.read_text(encoding="utf-8")
-    workflow = workflow_path.read_text(encoding="utf-8")
+    playbook = read(required["playbook"])
+    document_store = read(required["document_store"])
+    strict = read(required["strict"])
+    fingerprint = read(required["fingerprint"])
+    workflow = read(required["workflow"])
 
-    yaml.safe_load(playbook)
-    yaml.safe_load(document_store)
-    yaml.safe_load(strict)
-    yaml.safe_load(workflow)
+    for name, text in (
+        ("playbook", playbook),
+        ("document-store contract", document_store),
+        ("strict environment", strict),
+        ("workflow", workflow),
+    ):
+        try:
+            yaml.safe_load(text)
+        except Exception as exc:
+            failures.append(f"invalid YAML in {name}: {exc}")
 
     document_store_include = "tasks/datev_skr04/document_store_contract.yml"
     preflight_include = "tasks/datev_skr04/preflight.yml"
     strict_include = "tasks/datev_skr04/strict_environment.yml"
     apply_block = "Create and verify the parallel SKR04 client"
 
-    require(document_store_include in playbook, "live document-store gate is not included", failures)
+    require(document_store_include in playbook, "live config/document-store gate is not included", failures)
     require(
-        playbook.find(document_store_include) < playbook.find(preflight_include),
-        "live configuration/document-store gate must run before the general preflight",
+        0 <= playbook.find(document_store_include) < playbook.find(preflight_include),
+        "live config/document-store gate must precede general preflight",
         failures,
     )
     require(strict_include in playbook, "strict environment gate is not included", failures)
     require(
-        playbook.find(strict_include) < playbook.find(apply_block),
-        "strict environment gate must execute before every apply write phase",
+        0 <= playbook.find(strict_include) < playbook.find(apply_block),
+        "strict environment gate must precede every apply write phase",
         failures,
     )
 
     require(
-        all(
-            token in document_store
-            for token in (
-                "RawConfigParser(strict=False)",
-                'parser.get("authentication/database", "host"',
-                'parser.get("authentication/database", "port"',
-                'parser.get("authentication/database", "db"',
-                'parser.get("authentication/database", "user"',
-                'parser.get("paths", "document_path"',
-                "datev_skr04_live_config.auth_host == datev_skr04_db_host",
-                "datev_skr04_live_config.auth_port | string == datev_skr04_db_port | string",
-                "datev_skr04_live_config.auth_db == datev_skr04_auth_db",
-                "datev_skr04_live_config.auth_user == datev_skr04_db_user",
-                "datev_skr04_live_config.document_path == kivitendo_document_dir",
-                "datev_skr04_live_config.document_path == '/var/lib/kivitendo/documents'",
-            )
+        has(
+            document_store,
+            "RawConfigParser(strict=False)",
+            'parser.get("authentication/database", "host"',
+            'parser.get("authentication/database", "port"',
+            'parser.get("authentication/database", "db"',
+            'parser.get("authentication/database", "user"',
+            'parser.get("paths", "document_path"',
+            "datev_skr04_live_config.auth_host == datev_skr04_db_host",
+            "datev_skr04_live_config.auth_port | string == datev_skr04_db_port | string",
+            "datev_skr04_live_config.auth_db == datev_skr04_auth_db",
+            "datev_skr04_live_config.auth_user == datev_skr04_db_user",
+            "datev_skr04_live_config.document_path == kivitendo_document_dir",
+            "datev_skr04_live_config.document_path == '/var/lib/kivitendo/documents'",
         ),
-        "live config gate does not bind auth host/port/database/user and document path to the audited migration",
+        "live config is not exactly bound to audited auth and document settings",
         failures,
     )
 
     require(
-        all(
-            token in document_store
-            for token in (
-                "- /var/www",
-                '"{{ kivitendo_install_dir }}"',
-                '"{{ kivitendo_install_dir }}/config"',
-                '"{{ kivitendo_install_dir }}/config/kivitendo.conf"',
-                "follow: false",
-                "item.stat.pw_name == 'root'",
-                "item.stat.gr_name == kivitendo_web_group",
-                "item.stat.mode in ['0640', '0440']",
-                "web identity can modify protected config parent",
-                "web identity can modify live configuration",
-            )
+        has(
+            document_store,
+            "- /var/www",
+            '"{{ kivitendo_install_dir }}"',
+            '"{{ kivitendo_install_dir }}/config"',
+            '"{{ kivitendo_install_dir }}/config/kivitendo.conf"',
+            "follow: false",
+            "item.stat.pw_name == 'root'",
+            "not (item.stat.woth",
+            "not (item.stat.wgrp",
+            "datev_skr04_live_config_path_states.results[3].stat.gr_name == kivitendo_web_group",
+            "datev_skr04_live_config_path_states.results[3].stat.mode in ['0640', '0440']",
+            "web identity can modify protected config parent",
+            "web identity can modify live configuration",
         ),
-        "live config path gate does not reject intermediate symlinks or web-writable configuration state",
+        "live config path is not protected against intermediate symlinks or web writes",
         failures,
     )
 
     require(
-        all(
-            token in document_store
-            for token in (
-                "- /var/lib/kivitendo",
-                "item.item != '/var/lib/kivitendo'",
-                "item.stat.pw_name == 'root'",
-                "item.stat.gr_name == 'root'",
-                "item.stat.mode == '0750'",
-                "item.stat.pw_name == kivitendo_web_user",
-                "item.stat.gr_name == kivitendo_web_group",
-                'become_user: "{{ kivitendo_web_user }}"',
-                "web identity can replace the document-store entry",
-                "os.R_OK, os.W_OK, os.X_OK",
-            )
+        has(
+            document_store,
+            "- /var/lib/kivitendo",
+            "item.item != '/var/lib/kivitendo'",
+            "item.stat.pw_name == 'root'",
+            "item.stat.gr_name == 'root'",
+            "item.stat.mode == '0750'",
+            "item.stat.pw_name == kivitendo_web_user",
+            "item.stat.gr_name == kivitendo_web_group",
+            'become_user: "{{ kivitendo_web_user }}"',
+            "web identity can replace the document-store entry",
+            "os.R_OK, os.W_OK, os.X_OK",
         ),
-        "document-store gate does not bind a root-controlled parent, exact store ownership/mode and web access",
+        "document-store parent/final ownership and web-access guards are incomplete",
         failures,
     )
     require(
-        "ansible.builtin.file:" not in document_store
-        and "ansible.builtin.copy:" not in document_store
-        and "ansible.builtin.template:" not in document_store,
-        "live config/document-store preflight gate contains a write-capable filesystem action",
+        all(token not in document_store for token in ("ansible.builtin.file:", "ansible.builtin.copy:", "ansible.builtin.template:")),
+        "read-only live config/document-store gate contains a filesystem write action",
         failures,
     )
 
     require(
-        all(
-            token in strict
-            for token in (
-                "follow: false",
-                "datev_skr04_install_root_state.stat.isdir",
-                "datev_skr04_install_root_state.stat.islnk",
-                "SELECT count(*)::bigint AS defaults_rows FROM defaults",
-                "defaults_rows | int == 1",
-                "rolcreaterole",
-                "rolreplication",
-                "rolbypassrls",
-                "pg_auth_members",
-                "granted_role_memberships | int == 0",
-            )
+        has(
+            strict,
+            "follow: false",
+            "datev_skr04_install_root_state.stat.isdir",
+            "datev_skr04_install_root_state.stat.islnk",
+            "SELECT count(*)::bigint AS defaults_rows FROM defaults",
+            "defaults_rows | int == 1",
+            "rolcreaterole",
+            "rolreplication",
+            "rolbypassrls",
+            "pg_auth_members",
+            "granted_role_memberships | int == 0",
         ),
-        "strict gate does not cover installation symlinks, defaults cardinality and all role capabilities",
+        "strict environment does not enforce install/defaults/role invariants",
         failures,
     )
 
     require("defaults_rows" in fingerprint, "fingerprint omits defaults row cardinality", failures)
     require("defaults_digest" in fingerprint, "fingerprint omits defaults content digest", failures)
-    require(
-        "ORDER BY row_to_json(x)::text" in fingerprint,
-        "defaults digest is not deterministically ordered over every row",
-        failures,
-    )
+    require("ORDER BY row_to_json(x)::text" in fingerprint, "defaults digest is not deterministic", failures)
     require(
         not re.search(r"FROM\s+defaults\s+\w+\s+LIMIT\s+1", fingerprint, re.IGNORECASE),
         "fingerprint still truncates defaults to an arbitrary row",
@@ -170,27 +168,21 @@ def main() -> int:
     )
 
     require(
-        all(
-            token in playbook
-            for token in (
-                "datev_skr04_snapshot_gate_paths",
-                "checksum_algorithm: sha256",
-                "datev_skr04_snapshot_gate_manifest_payload",
-                "datev_skr04_snapshot_complete",
-                "Run target-only operations after the snapshot-complete gate",
-            )
+        has(
+            playbook,
+            "datev_skr04_snapshot_gate_paths",
+            "checksum_algorithm: sha256",
+            "datev_skr04_snapshot_gate_manifest_payload",
+            "datev_skr04_snapshot_complete",
+            "Run target-only operations after the snapshot-complete gate",
         ),
         "snapshot-complete evidence gate is incomplete",
         failures,
     )
-
     for forbidden_stage_tag in ("snapshot", "create", "register", "verify"):
         require(
-            not re.search(
-                rf"(?m)^\s*-\s+{re.escape(forbidden_stage_tag)}\s*$",
-                playbook,
-            ),
-            f"write-stage tag remains skippable: {forbidden_stage_tag}",
+            not re.search(rf"(?m)^\s*-\s+{re.escape(forbidden_stage_tag)}\s*$", playbook),
+            f"write-stage tag remains independently skippable: {forbidden_stage_tag}",
             failures,
         )
 
@@ -205,7 +197,7 @@ def main() -> int:
     ):
         require(
             workflow.count(shared_input) >= 2,
-            f"DATEV validation path filters omit shared input {shared_input}",
+            f"DATEV CI path filters omit shared input {shared_input}",
             failures,
         )
 
