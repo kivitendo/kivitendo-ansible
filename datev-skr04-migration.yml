@@ -17,6 +17,12 @@
         - always
         - preflight
 
+    - name: Enforce strict installation, defaults and PostgreSQL-role invariants
+      ansible.builtin.include_tasks: tasks/datev_skr04/strict_environment.yml
+      tags:
+        - always
+        - preflight
+
     - name: Bind the protected source authentication state
       ansible.builtin.include_tasks: tasks/datev_skr04/auth_baseline.yml
       tags:
