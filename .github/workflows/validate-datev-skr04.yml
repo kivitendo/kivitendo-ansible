@@ -9,7 +9,7 @@ on:
       - "scripts/kivitendo-create-dataset.pl"
       - "sql/datev-skr04-source-fingerprint.sql"
       - "docs/DATEV_SKR04_MIGRATION.md"
-      - "tests/validate_datev_skr04.py"
+      - "tests/validate_datev_skr04*.py"
       - ".github/workflows/validate-datev-skr04.yml"
   push:
     branches:
@@ -22,7 +22,7 @@ on:
       - "scripts/kivitendo-create-dataset.pl"
       - "sql/datev-skr04-source-fingerprint.sql"
       - "docs/DATEV_SKR04_MIGRATION.md"
-      - "tests/validate_datev_skr04.py"
+      - "tests/validate_datev_skr04*.py"
       - ".github/workflows/validate-datev-skr04.yml"
   workflow_dispatch:
 
@@ -80,11 +80,12 @@ jobs:
           set -euo pipefail
           bash scripts/bootstrap-debian-controller.sh
 
-      - name: Validate the migration safety contract
+      - name: Validate the migration safety and integrity contracts
         shell: bash
         run: |
           set -euo pipefail
           .venv/bin/python tests/validate_datev_skr04.py
+          .venv/bin/python tests/validate_datev_skr04_integrity.py
 
       - name: Validate all migration YAML documents
         shell: bash
