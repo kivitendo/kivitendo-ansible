@@ -1,0 +1,110 @@
+---
+- name: Inspect the live kivitendo configuration file without following symlinks
+  ansible.builtin.stat:
+    path: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+    follow: false
+  register: datev_skr04_live_config_state
+
+- name: Require a regular protected live kivitendo configuration file
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_live_config_state.stat.exists | bool
+      - datev_skr04_live_config_state.stat.isreg | default(false) | bool
+      - not (datev_skr04_live_config_state.stat.islnk | default(false) | bool)
+      - datev_skr04_live_config_state.stat.readable | default(false) | bool
+    fail_msg: >-
+      The live kivitendo configuration is missing, unreadable, not a regular
+      file or is reached through a symbolic link. Its document store cannot be
+      bound safely to the mandatory recovery snapshot.
+
+- name: Read only the configured live filesystem document path
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import configparser
+        import pathlib
+        import sys
+
+        config_path = pathlib.Path(sys.argv[1])
+        parser = configparser.RawConfigParser(strict=False)
+        with config_path.open("r", encoding="utf-8") as handle:
+            parser.read_file(handle)
+        value = parser.get("paths", "document_path", fallback="").strip()
+        if not value:
+            raise SystemExit("[paths] document_path is not configured")
+        if "\n" in value or "\r" in value:
+            raise SystemExit("[paths] document_path contains a newline")
+        sys.stdout.write(value)
+      - "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+  register: datev_skr04_live_document_path
+  changed_when: false
+
+- name: Bind the mandatory document snapshot to the path used by live kivitendo
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_live_document_path.stdout == kivitendo_document_dir
+      - datev_skr04_live_document_path.stdout == '/var/lib/kivitendo/documents'
+    fail_msg: >-
+      Live kivitendo uses document_path={{ datev_skr04_live_document_path.stdout
+      | default('missing') }}, but the audited migration would snapshot
+      {{ kivitendo_document_dir }}. Apply is blocked so an empty or unrelated
+      directory can never stand in for the real digital document store.
+
+- name: Inspect every fixed document-store path component without following symlinks
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /var
+    - /var/lib
+    - /var/lib/kivitendo
+    - "{{ kivitendo_document_dir }}"
+  register: datev_skr04_document_path_states
+
+- name: Require a real protected external document-store path
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | bool
+      - item.stat.isdir | default(false) | bool
+      - not (item.stat.islnk | default(false) | bool)
+      - item.stat.readable | default(false) | bool
+      - >-
+        item.item not in ['/var', '/var/lib', '/var/lib/kivitendo'] or
+        (
+          item.stat.pw_name == 'root' and
+          not (item.stat.mode is match('^0?[0-7][2367][2367]$'))
+        )
+      - >-
+        item.item != kivitendo_document_dir or
+        (
+          item.stat.pw_name == kivitendo_web_user and
+          item.stat.gr_name == kivitendo_web_group and
+          item.stat.mode == '0750'
+        )
+    fail_msg: >-
+      Document-store component {{ item.item }} is missing, not a directory,
+      symlinked, unreadable or has ownership/permissions different from the
+      audited deployment contract. Do not create a target until the live store
+      and its complete backup source are unambiguous.
+  loop: "{{ datev_skr04_document_path_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Verify the kivitendo web identity can traverse and read/write the live document store
+  become_user: "{{ kivitendo_web_user }}"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os
+        import pathlib
+        import sys
+
+        path = pathlib.Path(sys.argv[1])
+        if not all(os.access(path, mode) for mode in (os.R_OK, os.W_OK, os.X_OK)):
+            raise SystemExit("web identity lacks read/write/traverse access")
+      - "{{ kivitendo_document_dir }}"
+  changed_when: false
