@@ -28,8 +28,9 @@ def main() -> int:
     document_store_path = ROOT / "tasks/datev_skr04/document_store_contract.yml"
     strict_path = ROOT / "tasks/datev_skr04/strict_environment.yml"
     fingerprint_path = ROOT / "sql/datev-skr04-source-fingerprint.sql"
+    workflow_path = ROOT / ".github/workflows/validate-datev-skr04.yml"
 
-    for path in (playbook_path, document_store_path, strict_path, fingerprint_path):
+    for path in (playbook_path, document_store_path, strict_path, fingerprint_path, workflow_path):
         require(path.is_file(), f"missing required integrity file: {path.relative_to(ROOT)}", failures)
 
     if failures:
@@ -41,10 +42,12 @@ def main() -> int:
     document_store = document_store_path.read_text(encoding="utf-8")
     strict = strict_path.read_text(encoding="utf-8")
     fingerprint = fingerprint_path.read_text(encoding="utf-8")
+    workflow = workflow_path.read_text(encoding="utf-8")
 
     yaml.safe_load(playbook)
     yaml.safe_load(document_store)
     yaml.safe_load(strict)
+    yaml.safe_load(workflow)
 
     document_store_include = "tasks/datev_skr04/document_store_contract.yml"
     preflight_include = "tasks/datev_skr04/preflight.yml"
@@ -54,7 +57,7 @@ def main() -> int:
     require(document_store_include in playbook, "live document-store gate is not included", failures)
     require(
         playbook.find(document_store_include) < playbook.find(preflight_include),
-        "live document-store gate must run before the general preflight",
+        "live configuration/document-store gate must run before the general preflight",
         failures,
     )
     require(strict_include in playbook, "strict environment gate is not included", failures)
@@ -69,26 +72,67 @@ def main() -> int:
             token in document_store
             for token in (
                 "RawConfigParser(strict=False)",
+                'parser.get("authentication/database", "host"',
+                'parser.get("authentication/database", "port"',
+                'parser.get("authentication/database", "db"',
+                'parser.get("authentication/database", "user"',
                 'parser.get("paths", "document_path"',
-                "datev_skr04_live_document_path.stdout == kivitendo_document_dir",
-                "datev_skr04_live_document_path.stdout == '/var/lib/kivitendo/documents'",
+                "datev_skr04_live_config.auth_host == datev_skr04_db_host",
+                "datev_skr04_live_config.auth_port | string == datev_skr04_db_port | string",
+                "datev_skr04_live_config.auth_db == datev_skr04_auth_db",
+                "datev_skr04_live_config.auth_user == datev_skr04_db_user",
+                "datev_skr04_live_config.document_path == kivitendo_document_dir",
+                "datev_skr04_live_config.document_path == '/var/lib/kivitendo/documents'",
+            )
+        ),
+        "live config gate does not bind auth host/port/database/user and document path to the audited migration",
+        failures,
+    )
+
+    require(
+        all(
+            token in document_store
+            for token in (
+                "- /var/www",
+                '"{{ kivitendo_install_dir }}"',
+                '"{{ kivitendo_install_dir }}/config"',
+                '"{{ kivitendo_install_dir }}/config/kivitendo.conf"',
                 "follow: false",
+                "item.stat.pw_name == 'root'",
+                "item.stat.gr_name == kivitendo_web_group",
+                "item.stat.mode in ['0640', '0440']",
+                "web identity can modify protected config parent",
+                "web identity can modify live configuration",
+            )
+        ),
+        "live config path gate does not reject intermediate symlinks or web-writable configuration state",
+        failures,
+    )
+
+    require(
+        all(
+            token in document_store
+            for token in (
                 "- /var/lib/kivitendo",
+                "item.item != '/var/lib/kivitendo'",
+                "item.stat.pw_name == 'root'",
+                "item.stat.gr_name == 'root'",
                 "item.stat.mode == '0750'",
                 "item.stat.pw_name == kivitendo_web_user",
                 "item.stat.gr_name == kivitendo_web_group",
                 'become_user: "{{ kivitendo_web_user }}"',
+                "web identity can replace the document-store entry",
                 "os.R_OK, os.W_OK, os.X_OK",
             )
         ),
-        "document-store gate does not bind the live configuration, real path, ownership, mode and web access",
+        "document-store gate does not bind a root-controlled parent, exact store ownership/mode and web access",
         failures,
     )
     require(
         "ansible.builtin.file:" not in document_store
         and "ansible.builtin.copy:" not in document_store
         and "ansible.builtin.template:" not in document_store,
-        "document-store preflight gate contains a write-capable filesystem action",
+        "live config/document-store preflight gate contains a write-capable filesystem action",
         failures,
     )
 
@@ -147,6 +191,21 @@ def main() -> int:
                 playbook,
             ),
             f"write-stage tag remains skippable: {forbidden_stage_tag}",
+            failures,
+        )
+
+    for shared_input in (
+        '"ansible.cfg"',
+        '"inventory"',
+        '"main.yml"',
+        '"vars.yml"',
+        '"requirements.txt"',
+        '"requirements.yml"',
+        '"scripts/bootstrap-debian-controller.sh"',
+    ):
+        require(
+            workflow.count(shared_input) >= 2,
+            f"DATEV validation path filters omit shared input {shared_input}",
             failures,
         )
 
