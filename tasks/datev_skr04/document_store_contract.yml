@@ -1,29 +1,98 @@
 ---
-- name: Inspect the live kivitendo configuration file without following symlinks
+- name: Inspect every live kivitendo configuration path component without following symlinks
   ansible.builtin.stat:
-    path: "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+    path: "{{ item }}"
     follow: false
-  register: datev_skr04_live_config_state
+  loop:
+    - /var/www
+    - "{{ kivitendo_install_dir }}"
+    - "{{ kivitendo_install_dir }}/config"
+    - "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+  register: datev_skr04_live_config_path_states
 
-- name: Require a regular protected live kivitendo configuration file
+- name: Require real root-controlled live configuration path components
   ansible.builtin.assert:
     that:
-      - datev_skr04_live_config_state.stat.exists | bool
-      - datev_skr04_live_config_state.stat.isreg | default(false) | bool
-      - not (datev_skr04_live_config_state.stat.islnk | default(false) | bool)
-      - datev_skr04_live_config_state.stat.readable | default(false) | bool
+      - item.stat.exists | bool
+      - not (item.stat.islnk | default(false) | bool)
+      - >-
+        item.item == (kivitendo_install_dir ~ '/config/kivitendo.conf') or
+        (item.stat.isdir | default(false) | bool)
+      - >-
+        item.item != (kivitendo_install_dir ~ '/config/kivitendo.conf') or
+        (item.stat.isreg | default(false) | bool)
+      - item.stat.pw_name == 'root'
+      - not (item.stat.woth | default(false) | bool)
+      - >-
+        not (item.stat.wgrp | default(false) | bool) or
+        item.stat.gr_name == 'root'
     fail_msg: >-
-      The live kivitendo configuration is missing, unreadable, not a regular
-      file or is reached through a symbolic link. Its document store cannot be
-      bound safely to the mandatory recovery snapshot.
+      Live configuration path component {{ item.item }} is missing, symlinked,
+      not the expected file/directory type, not root-owned or writable by an
+      untrusted group/world principal. The mandatory snapshot cannot be trusted.
+  loop: "{{ datev_skr04_live_config_path_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
 
-- name: Read only the configured live filesystem document path
+- name: Require the deployed protected live configuration ownership and mode
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_live_config_path_states.results[3].stat.pw_name == 'root'
+      - datev_skr04_live_config_path_states.results[3].stat.gr_name == kivitendo_web_group
+      - datev_skr04_live_config_path_states.results[3].stat.mode in ['0640', '0440']
+    fail_msg: >-
+      The live kivitendo configuration must be root-owned, readable through the
+      configured web group and not writable by the web identity.
+
+- name: Prove the web identity can traverse configuration parents but cannot replace them
+  become_user: "{{ kivitendo_web_user }}"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os
+        import pathlib
+        import sys
+
+        for raw in sys.argv[1:]:
+            path = pathlib.Path(raw)
+            if not os.access(path, os.X_OK):
+                raise SystemExit(f"web identity cannot traverse {path}")
+            if os.access(path, os.W_OK):
+                raise SystemExit(f"web identity can modify protected config parent {path}")
+      - /var/www
+      - "{{ kivitendo_install_dir }}"
+      - "{{ kivitendo_install_dir }}/config"
+  changed_when: false
+
+- name: Prove the web identity can read but cannot modify the live configuration
+  become_user: "{{ kivitendo_web_user }}"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os
+        import pathlib
+        import sys
+
+        path = pathlib.Path(sys.argv[1])
+        if not os.access(path, os.R_OK):
+            raise SystemExit("web identity cannot read live configuration")
+        if os.access(path, os.W_OK):
+            raise SystemExit("web identity can modify live configuration")
+      - "{{ kivitendo_install_dir }}/config/kivitendo.conf"
+  changed_when: false
+
+- name: Read only the non-secret live database and document-store bindings
   ansible.builtin.command:
     argv:
       - python3
       - -c
       - |
         import configparser
+        import json
         import pathlib
         import sys
 
@@ -31,26 +100,42 @@
         parser = configparser.RawConfigParser(strict=False)
         with config_path.open("r", encoding="utf-8") as handle:
             parser.read_file(handle)
-        value = parser.get("paths", "document_path", fallback="").strip()
-        if not value:
-            raise SystemExit("[paths] document_path is not configured")
-        if "\n" in value or "\r" in value:
-            raise SystemExit("[paths] document_path contains a newline")
-        sys.stdout.write(value)
+
+        payload = {
+            "auth_host": parser.get("authentication/database", "host", fallback="").strip(),
+            "auth_port": parser.get("authentication/database", "port", fallback="").strip(),
+            "auth_db": parser.get("authentication/database", "db", fallback="").strip(),
+            "auth_user": parser.get("authentication/database", "user", fallback="").strip(),
+            "document_path": parser.get("paths", "document_path", fallback="").strip(),
+        }
+        for key, value in payload.items():
+            if not value:
+                raise SystemExit(f"live kivitendo setting {key} is missing")
+            if "\n" in value or "\r" in value:
+                raise SystemExit(f"live kivitendo setting {key} contains a newline")
+        sys.stdout.write(json.dumps(payload, sort_keys=True))
       - "{{ kivitendo_install_dir }}/config/kivitendo.conf"
-  register: datev_skr04_live_document_path
+  register: datev_skr04_live_config_payload_raw
   changed_when: false
 
-- name: Bind the mandatory document snapshot to the path used by live kivitendo
+- name: Parse the non-secret live configuration binding
+  ansible.builtin.set_fact:
+    datev_skr04_live_config: "{{ datev_skr04_live_config_payload_raw.stdout | from_json }}"
+
+- name: Bind migration database and document operations to the running kivitendo configuration
   ansible.builtin.assert:
     that:
-      - datev_skr04_live_document_path.stdout == kivitendo_document_dir
-      - datev_skr04_live_document_path.stdout == '/var/lib/kivitendo/documents'
+      - datev_skr04_live_config is mapping
+      - datev_skr04_live_config.auth_host == datev_skr04_db_host
+      - datev_skr04_live_config.auth_port | string == datev_skr04_db_port | string
+      - datev_skr04_live_config.auth_db == datev_skr04_auth_db
+      - datev_skr04_live_config.auth_user == datev_skr04_db_user
+      - datev_skr04_live_config.document_path == kivitendo_document_dir
+      - datev_skr04_live_config.document_path == '/var/lib/kivitendo/documents'
     fail_msg: >-
-      Live kivitendo uses document_path={{ datev_skr04_live_document_path.stdout
-      | default('missing') }}, but the audited migration would snapshot
-      {{ kivitendo_document_dir }}. Apply is blocked so an empty or unrelated
-      directory can never stand in for the real digital document store.
+      The audited migration database or document-store binding differs from the
+      live kivitendo configuration. No snapshot, target registration or DATEV
+      preparation may proceed against a different auth database or document store.
 
 - name: Inspect every fixed document-store path component without following symlinks
   ansible.builtin.stat:
@@ -75,14 +160,16 @@
         (
           item.stat.pw_name == 'root' and
           item.stat.gr_name == 'root' and
-          item.stat.mode is match('^0?[0-7][0145][0145]$')
+          not (item.stat.wgrp | default(false) | bool) and
+          not (item.stat.woth | default(false) | bool)
         )
       - >-
         item.item != '/var/lib/kivitendo' or
         (
-          item.stat.pw_name in ['root', kivitendo_web_user] and
-          item.stat.gr_name in ['root', kivitendo_web_group] and
-          item.stat.mode is match('^0?[0-7][0145][0145]$')
+          item.stat.pw_name == 'root' and
+          item.stat.gr_name == 'root' and
+          not (item.stat.wgrp | default(false) | bool) and
+          not (item.stat.woth | default(false) | bool)
         )
       - >-
         item.item != kivitendo_document_dir or
@@ -92,13 +179,32 @@
           item.stat.mode == '0750'
         )
     fail_msg: >-
-      Document-store component {{ item.item }} is missing, not a directory,
-      symlinked, unreadable or has ownership/permissions different from the
-      audited deployment contract. Do not create a target until the live store
-      and its complete backup source are unambiguous.
+      Document-store component {{ item.item }} is missing, symlinked, not a
+      directory, or permits the web identity to replace the protected document
+      root. The parent must be root-controlled and the final store must be
+      www-data-owned with mode 0750.
   loop: "{{ datev_skr04_document_path_states.results }}"
   loop_control:
     label: "{{ item.item }}"
+
+- name: Prove the web identity cannot replace the protected document-store parent
+  become_user: "{{ kivitendo_web_user }}"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import os
+        import pathlib
+        import sys
+
+        path = pathlib.Path(sys.argv[1])
+        if not os.access(path, os.X_OK):
+            raise SystemExit("web identity cannot traverse document-store parent")
+        if os.access(path, os.W_OK):
+            raise SystemExit("web identity can replace the document-store entry")
+      - /var/lib/kivitendo
+  changed_when: false
 
 - name: Verify the kivitendo web identity can traverse and read/write the live document store
   become_user: "{{ kivitendo_web_user }}"
