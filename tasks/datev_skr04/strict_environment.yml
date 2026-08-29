@@ -1,0 +1,74 @@
+---
+- name: Inspect the installed kivitendo root without following symlinks
+  ansible.builtin.stat:
+    path: "{{ kivitendo_install_dir }}"
+    follow: false
+  register: datev_skr04_install_root_state
+
+- name: Require a real readable installation directory for complete recovery evidence
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_install_root_state.stat.exists | bool
+      - datev_skr04_install_root_state.stat.isdir | default(false) | bool
+      - not (datev_skr04_install_root_state.stat.islnk | default(false) | bool)
+      - datev_skr04_install_root_state.stat.readable | default(false) | bool
+    fail_msg: >-
+      The installed kivitendo root must be a real readable directory, not a
+      symbolic link. Otherwise the mandatory installation archive could contain
+      only a link instead of complete recovery evidence.
+
+- name: Count every defaults row in the protected source database
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: "{{ datev_skr04_source_db }}"
+    query: SELECT count(*)::bigint AS defaults_rows FROM defaults;
+  register: datev_skr04_source_defaults_cardinality
+  changed_when: false
+
+- name: Require exactly one unambiguous source defaults row
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_defaults_cardinality.query_result | length == 1
+      - datev_skr04_source_defaults_cardinality.query_result[0].defaults_rows | int == 1
+    fail_msg: >-
+      The protected source must contain exactly one defaults row. A missing,
+      legacy-duplicated or corrupted defaults state is ambiguous and blocks
+      fingerprinting, snapshotting and target creation.
+
+- name: Inspect the complete persistent application-role capability set
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_db: postgres
+    query: |
+      SELECT
+        r.rolcanlogin,
+        r.rolcreatedb,
+        r.rolsuper,
+        r.rolcreaterole,
+        r.rolreplication,
+        r.rolbypassrls,
+        (SELECT count(*)::bigint
+           FROM pg_auth_members m
+          WHERE m.member = r.oid) AS granted_role_memberships
+      FROM pg_roles r
+      WHERE r.rolname = %(db_user)s;
+    named_args:
+      db_user: "{{ datev_skr04_db_user }}"
+  register: datev_skr04_complete_application_role_state
+  changed_when: false
+
+- name: Enforce the documented LOGIN and CREATEDB-only application role
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_complete_application_role_state.query_result | length == 1
+      - datev_skr04_complete_application_role_state.query_result[0].rolcanlogin | bool
+      - datev_skr04_complete_application_role_state.query_result[0].rolcreatedb | bool
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolsuper | bool)
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolcreaterole | bool)
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolreplication | bool)
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolbypassrls | bool)
+      - datev_skr04_complete_application_role_state.query_result[0].granted_role_memberships | int == 0
+    fail_msg: >-
+      The persistent kivitendo database role must have LOGIN and CREATEDB only.
+      SUPERUSER, CREATEROLE, REPLICATION, BYPASSRLS and inherited role
+      memberships are prohibited before any migration write phase.
