@@ -120,7 +120,7 @@ my $occupied_names = $admin_dbh->selectall_arrayref(
     SELECT datname
       FROM pg_database
      WHERE datname = ?
-        OR datname LIKE 'kivi_skr04_stage_%'
+        OR left(datname, length('kivi_skr04_stage_')) = 'kivi_skr04_stage_'
      ORDER BY datname
   },
   undef,
