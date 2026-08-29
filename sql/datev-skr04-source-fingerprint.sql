@@ -1,10 +1,31 @@
+WITH defaults_state AS (
+  SELECT
+    count(*)::bigint AS defaults_rows,
+    COALESCE(min(version::text), '') AS schema_version,
+    COALESCE(min(coa::text), '') AS coa,
+    COALESCE(min(closedto::text), '') AS closed_to,
+    COALESCE(min(accounting_method::text), '') AS accounting_method,
+    COALESCE(min(profit_determination::text), '') AS profit_determination,
+    COALESCE(
+      md5(
+        string_agg(
+          md5(row_to_json(x)::text),
+          ''
+          ORDER BY row_to_json(x)::text
+        )
+      ),
+      md5('')
+    ) AS defaults_digest
+  FROM defaults x
+)
 SELECT
   current_database() AS database_name,
-  COALESCE(d.version::text, '') AS schema_version,
-  COALESCE(d.coa, '') AS coa,
-  COALESCE(d.closedto::text, '') AS closed_to,
-  COALESCE(d.accounting_method, '') AS accounting_method,
-  COALESCE(d.profit_determination, '') AS profit_determination,
+  d.defaults_rows,
+  d.schema_version,
+  d.coa,
+  d.closed_to,
+  d.accounting_method,
+  d.profit_determination,
   (SELECT count(*)::bigint FROM chart) AS chart_rows,
   (SELECT count(*)::bigint FROM chart WHERE charttype = 'A') AS account_rows,
   (SELECT COALESCE(md5(string_agg(md5(row_to_json(x)::text), '' ORDER BY x.id)), md5('')) FROM chart x) AS chart_digest,
@@ -36,6 +57,5 @@ SELECT
   (SELECT COALESCE(md5(string_agg(md5(row_to_json(x)::text), '' ORDER BY x.id)), md5('')) FROM invoice x) AS invoice_item_digest,
   (SELECT count(*)::bigint FROM bank_transactions) AS bank_transactions_rows,
   (SELECT COALESCE(md5(string_agg(md5(row_to_json(x)::text), '' ORDER BY x.id)), md5('')) FROM bank_transactions x) AS bank_transactions_digest,
-  md5(row_to_json(d)::text) AS defaults_digest
-FROM defaults d
-LIMIT 1;
+  d.defaults_digest
+FROM defaults_state d;
