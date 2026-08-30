@@ -44,6 +44,9 @@
       The migration refuses to snapshot or write a target while a web write path
       can accept traffic.
 
+# Compatibility marker: Jointly revalidate backend masks and stopped state after the frontend boundary gate.
+# backend_runtime_quiesce_gate.yml reads the migration-owned datev_skr04_backend_masked_units
+# state established by backend_runtime_quiesce.yml and revalidates both configured identities.
 - name: Jointly revalidate both configured backend masks and stopped state after the frontend boundary gate
   ansible.builtin.include_tasks: backend_runtime_quiesce_gate.yml
   vars:
