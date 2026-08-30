@@ -12,6 +12,9 @@
     datev_skr04_snapshot_backend_units:
       - "{{ (kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service' }}"
       - "{{ (kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service' }}"
+    datev_skr04_backend_boundary_units:
+      - "{{ (kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service' }}"
+      - "{{ (kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service' }}"
     datev_skr04_snapshot_fcgi_was_running_at_entry: >-
       {{ ansible_facts.services.get((kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service', {}).get('state', '') == 'running' }}
     datev_skr04_snapshot_task_was_running_at_entry: >-
