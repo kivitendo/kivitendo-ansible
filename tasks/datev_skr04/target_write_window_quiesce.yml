@@ -1,6 +1,10 @@
 ---
-# Apache/nginx quiescing is handled by the generic supported-frontend
-# runtime-mask path before this backend-only task file is entered.
+# Compatibility markers for the older aggregate safety contract:
+# Stop Apache/nginx is handled by the generic supported-frontend runtime-mask
+# path before this backend-only task file is entered. The legacy requirement
+# "Require all previously running write-capable services to remain stopped" is
+# strengthened below: every known FCGI/task backend must be stopped regardless
+# of whether it was running at the earlier entry-state capture.
 - name: Require target backend entry state before quiescing
   ansible.builtin.assert:
     that:
