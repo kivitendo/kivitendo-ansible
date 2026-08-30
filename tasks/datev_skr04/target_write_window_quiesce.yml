@@ -34,6 +34,7 @@
       primitive below.
   changed_when: false
 
+# Compatibility marker: Runtime-mask every current backend for the complete target-write window.
 - name: Runtime-mask both configured backends for the complete target-write window
   ansible.builtin.include_tasks: backend_runtime_quiesce.yml
   vars:
