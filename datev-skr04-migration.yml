@@ -8,6 +8,8 @@
 
   # Perl reads these variables before a script BEGIN block. Clear ambient
   # startup/search-path customization for every task in this reviewed play.
+  # PGOPTIONS pins every libpq/DBI session spawned by the native initializer to
+  # the kivitendo production schema instead of any role-level ambient search_path.
   environment:
     PERL5OPT: ""
     PERL5LIB: ""
@@ -17,6 +19,7 @@
     PERL_MB_OPT: ""
     PERL_MM_OPT: ""
     PERL_USE_UNSAFE_INC: "0"
+    PGOPTIONS: "-c search_path=public,pg_catalog"
 
   vars_files:
     - vars.yml
@@ -157,10 +160,12 @@
           - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_bound_system_identifier
           - datev_skr04_application_role_contract_state.query_result | length == 1
           - datev_skr04_application_role_contract_state.query_result[0].members_that_can_assume_application | int == 0
+          - not (datev_skr04_application_role_contract_state.query_result[0].role_search_path_overridden | bool)
+          - datev_skr04_application_role_contract_state.query_result[0].database_search_path_overrides | int == 0
         fail_msg: >-
-          Apply mode did not complete target, complete-default, cluster, role and
-          evidence verification. No access, master-data migration or production
-          cutover is allowed.
+          Apply mode did not complete target, complete-default, cluster, role,
+          schema-path and evidence verification. No access, master-data migration
+          or production cutover is allowed.
       when: datev_skr04_mode == 'apply'
 
     - name: Confirm that preflight made no changes
@@ -168,7 +173,7 @@
         msg: >-
           Read-only preflight complete. The reviewed orchestration checkout,
           document store, installed privileged source tree, PostgreSQL role graph,
-          source closing boundary and socket/TCP cluster binding were verified.
-          No target or staging database, auth client, posting, customer, invoice,
-          default-client or task-server change was made.
+          schema path, source closing boundary and socket/TCP cluster binding were
+          verified. No target or staging database, auth client, posting, customer,
+          invoice, default-client or task-server change was made.
       when: datev_skr04_mode == 'preflight'
