@@ -8,37 +8,37 @@
       - datev_skr04_snapshot_task_was_running_at_entry is defined
     fail_msg: >-
       Snapshot backend entry state was not captured before the HTTP frontend was
-      quiesced. Refusing to infer restoration state after service dependencies
-      may already have changed it.
+      quiesced. Entry flags are required only to restore the original service
+      state after the protected window.
 
-- name: Stop snapshot-entry FCGI backend when it was running
+- name: Re-read backend state immediately before snapshot quiescing
+  ansible.builtin.service_facts:
+
+- name: Stop the FCGI backend from its current state before snapshotting
   ansible.builtin.service:
     name: "{{ datev_skr04_snapshot_fcgi_service_name }}"
     state: stopped
   when:
     - datev_skr04_quiesce_source | bool
-    - datev_skr04_snapshot_fcgi_was_running_at_entry | bool
+    - (datev_skr04_snapshot_fcgi_service_name + '.service') in ansible_facts.services
 
-- name: Stop snapshot-entry task server when it was running
+- name: Stop the task server from its current state before snapshotting
   ansible.builtin.service:
     name: "{{ datev_skr04_snapshot_task_service_name }}"
     state: stopped
   when:
     - datev_skr04_quiesce_source | bool
-    - datev_skr04_snapshot_task_was_running_at_entry | bool
+    - (datev_skr04_snapshot_task_service_name + '.service') in ansible_facts.services
 
-- name: Re-read backend state immediately before the snapshot operation
+- name: Re-read backend state at the snapshot operation boundary
   ansible.builtin.service_facts:
 
-- name: Require snapshot-entry backends to be stopped
+- name: Require all known snapshot backends to be stopped regardless of entry state
   ansible.builtin.assert:
     that:
-      - >-
-        not (datev_skr04_snapshot_fcgi_was_running_at_entry | bool) or
-        ansible_facts.services.get(datev_skr04_snapshot_fcgi_service_name + '.service', {}).get('state', '') != 'running'
-      - >-
-        not (datev_skr04_snapshot_task_was_running_at_entry | bool) or
-        ansible_facts.services.get(datev_skr04_snapshot_task_service_name + '.service', {}).get('state', '') != 'running'
+      - ansible_facts.services.get(datev_skr04_snapshot_fcgi_service_name + '.service', {}).get('state', '') != 'running'
+      - ansible_facts.services.get(datev_skr04_snapshot_task_service_name + '.service', {}).get('state', '') != 'running'
     fail_msg: >-
-      A backend that was running at snapshot-window entry could not be stopped.
-      No source/auth/filesystem snapshot is allowed from a write-active source.
+      A write-capable backend is running at the snapshot operation boundary.
+      Entry-state flags are preserved only for restoration; they never exempt a
+      backend that became active after entry capture from being stopped now.
