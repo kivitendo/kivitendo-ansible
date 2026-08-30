@@ -231,6 +231,18 @@ def main() -> int:
         "the privileged helper can still load modified, deleted, untracked or ignored Perl code outside modules/override",
         failures,
     )
+    require(
+        has(
+            preflight,
+            "Audit every native database SQL input against the pinned checkout",
+            "Reject modified, deleted, untracked or ignored native SQL inputs",
+            "diff, --name-only, HEAD, --, sql",
+            "ls-files, --others, --exclude-standard, --, sql",
+            "ls-files, --others, --ignored, --exclude-standard, --, sql",
+        ),
+        "native schema/upgrade SQL can still drift from the pinned kivitendo checkout before temporary PostgreSQL elevation",
+        failures,
+    )
 
     require("defaults_rows" in fingerprint, "fingerprint omits defaults row cardinality", failures)
     require("defaults_digest" in fingerprint, "fingerprint omits defaults content digest", failures)
