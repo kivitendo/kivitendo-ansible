@@ -99,7 +99,7 @@
         current_setting('port')::integer AS server_port,
         current_database() AS database_name,
         current_user AS session_user,
-        inet_server_addr()::text AS server_address,
+        host(inet_server_addr()) AS server_address,
         inet_server_port()::integer AS accepted_port;
   register: datev_skr04_tcp_cluster_endpoint
   changed_when: false
