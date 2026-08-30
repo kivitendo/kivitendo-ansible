@@ -180,6 +180,29 @@
   loop_control:
     label: "{{ item.item | join(' ') }}"
 
+- name: Audit every native database SQL input against the pinned checkout
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", diff, --name-only, HEAD, --, sql]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --exclude-standard, --, sql]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --ignored, --exclude-standard, --, sql]
+  register: datev_skr04_sql_source_tree_audit
+  changed_when: false
+
+- name: Reject modified, deleted, untracked or ignored native SQL inputs
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim | length == 0
+    fail_msg: >-
+      The installed kivitendo sql/ tree differs from the pinned Git HEAD or
+      contains untracked/ignored files. Native dataset creation and upgrade SQL
+      can execute with temporary PostgreSQL elevation, so every SQL input must
+      be the reviewed version before privileged target creation is permitted.
+  loop: "{{ datev_skr04_sql_source_tree_audit.results }}"
+  loop_control:
+    label: "{{ item.item | join(' ') }}"
+
 - name: Check whether the target-specific DATEV sidecar contract already exists
   ansible.builtin.stat:
     path: "{{ datev_skr04_sidecar_config_file }}"
