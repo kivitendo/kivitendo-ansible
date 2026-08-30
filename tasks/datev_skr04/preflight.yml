@@ -102,6 +102,29 @@
       The repository-native dataset helper is missing, not a regular file or is
       reached through a symlink. Apply will not execute an ambiguous helper.
 
+- name: Audit the complete kivitendo Perl override tree against the pinned checkout
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", diff, --name-only, HEAD, --, modules/override]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --exclude-standard, --, modules/override]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --ignored, --exclude-standard, --, modules/override]
+  register: datev_skr04_override_tree_audit
+  changed_when: false
+
+- name: Reject modified, untracked or ignored Perl override modules
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim | length == 0
+    fail_msg: >-
+      The kivitendo modules/override tree contains modified, untracked or
+      ignored content. Because the native initializer deliberately gives that
+      tree Perl module precedence, every override must come unchanged from the
+      pinned Git revision before privileged target creation is permitted.
+  loop: "{{ datev_skr04_override_tree_audit.results }}"
+  loop_control:
+    label: "{{ item.item | join(' ') }}"
+
 - name: Check whether the target-specific DATEV sidecar contract already exists
   ansible.builtin.stat:
     path: "{{ datev_skr04_sidecar_config_file }}"
@@ -139,6 +162,7 @@
 - name: Validate every source covered by the mandatory local-file snapshots
   ansible.builtin.stat:
     path: "{{ item }}"
+    follow: false
   loop:
     - "{{ kivitendo_install_dir }}/config"
     - "{{ kivitendo_install_dir }}/templates"
@@ -152,10 +176,12 @@
     that:
       - item.stat.exists | bool
       - item.stat.isdir | bool
+      - not (item.stat.islnk | default(false) | bool)
       - item.stat.readable | default(true) | bool
     fail_msg: >-
-      Required snapshot source {{ item.item }} is missing, not a directory or
-      not readable. Apply is blocked rather than creating incomplete evidence.
+      Required snapshot source {{ item.item }} is missing, is a symlink, is not
+      a directory or is not readable. Apply is blocked rather than creating
+      incomplete recovery evidence.
   loop: "{{ datev_skr04_snapshot_source_paths.results }}"
   loop_control:
     label: "{{ item.item }}"
