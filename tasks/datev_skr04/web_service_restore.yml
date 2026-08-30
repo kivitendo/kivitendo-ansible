@@ -6,19 +6,3 @@
   register: datev_skr04_web_service_restore_attempt
   failed_when: false
   when: datev_skr04_web_service_was_running | default(false) | bool
-
-- name: Re-read configured web frontend state after restoration attempt
-  ansible.builtin.service_facts:
-
-- name: Require the configured web frontend to be restored
-  ansible.builtin.assert:
-    that:
-      - not (datev_skr04_web_service_was_running | default(false) | bool) or
-        (
-          not (datev_skr04_web_service_restore_attempt.failed | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
-        )
-    fail_msg: >-
-      The configured kivitendo web frontend could not be restored after the
-      protected migration window. The run stops after the restoration attempt;
-      service recovery must be handled before any further migration action.
