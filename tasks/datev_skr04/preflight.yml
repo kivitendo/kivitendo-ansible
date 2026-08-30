@@ -440,16 +440,16 @@
     login_db: "{{ datev_skr04_source_db }}"
     query: |
       SELECT
-        (SELECT count(*)::bigint FROM chart WHERE charttype = 'A') AS account_count,
-        (SELECT count(*)::bigint FROM chart WHERE charttype = 'A' AND accno !~ '^[0-9]{4}$') AS invalid_account_count,
-        (SELECT count(*)::bigint FROM acc_trans WHERE transdate < %(fiscal_start)s::date) AS postings_before_fiscal_start,
-        (SELECT count(*)::bigint FROM ar) AS ar_count,
-        (SELECT count(*)::bigint FROM acc_trans) AS acc_trans_count,
+        (SELECT count(*)::bigint FROM public.chart WHERE charttype = 'A') AS account_count,
+        (SELECT count(*)::bigint FROM public.chart WHERE charttype = 'A' AND accno !~ '^[0-9]{4}$') AS invalid_account_count,
+        (SELECT count(*)::bigint FROM public.acc_trans WHERE transdate < %(fiscal_start)s::date) AS postings_before_fiscal_start,
+        (SELECT count(*)::bigint FROM public.ar) AS ar_count,
+        (SELECT count(*)::bigint FROM public.acc_trans) AS acc_trans_count,
         coa,
         closedto::text AS closed_to,
         accounting_method,
         profit_determination
-      FROM defaults
+      FROM public.defaults
       LIMIT 1;
     named_args:
       fiscal_start: "{{ datev_skr04_fiscal_year_start }}"
