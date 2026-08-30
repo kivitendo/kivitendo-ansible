@@ -29,17 +29,34 @@
 
 - name: Read the exact orchestration Git state and privileged blob identities
   ansible.builtin.command:
-    argv: "{{ item }}"
+    argv: >-
+      {{
+        [
+          '/usr/bin/git',
+          '-c', 'core.hooksPath=/dev/null',
+          '-c', 'core.fsmonitor=false',
+          '-c', 'core.attributesFile=/dev/null',
+          '-c', 'core.sparseCheckout=false',
+          '-C', playbook_dir
+        ] + item
+      }}
+  environment:
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_COUNT: "0"
+    GIT_NO_REPLACE_OBJECTS: "1"
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_PAGER: cat
   loop:
-    - [git, -C, "{{ playbook_dir }}", rev-parse, HEAD]
-    - [git, -C, "{{ playbook_dir }}", status, --porcelain=v1, --untracked-files=no]
-    - [git, -C, "{{ playbook_dir }}", diff, --cached, --name-only]
-    - [git, -C, "{{ playbook_dir }}", rev-parse, HEAD:scripts/kivitendo-create-dataset.pl]
-    - [git, -C, "{{ playbook_dir }}", hash-object, scripts/kivitendo-create-dataset.pl]
-    - [git, -C, "{{ playbook_dir }}", rev-parse, HEAD:sql/datev-skr04-source-fingerprint.sql]
-    - [git, -C, "{{ playbook_dir }}", hash-object, sql/datev-skr04-source-fingerprint.sql]
-    - [git, -C, "{{ playbook_dir }}", rev-parse, HEAD:datev-skr04-migration.yml]
-    - [git, -C, "{{ playbook_dir }}", hash-object, datev-skr04-migration.yml]
+    - [rev-parse, HEAD]
+    - [status, --porcelain=v1, --untracked-files=no]
+    - [diff, --no-ext-diff, --cached, --name-only]
+    - [rev-parse, HEAD:scripts/kivitendo-create-dataset.pl]
+    - [hash-object, scripts/kivitendo-create-dataset.pl]
+    - [rev-parse, HEAD:sql/datev-skr04-source-fingerprint.sql]
+    - [hash-object, sql/datev-skr04-source-fingerprint.sql]
+    - [rev-parse, HEAD:datev-skr04-migration.yml]
+    - [hash-object, datev-skr04-migration.yml]
   register: datev_skr04_orchestration_git_state
   changed_when: false
 
@@ -61,7 +78,15 @@
 - name: Enumerate every tracked migration runtime input from reviewed HEAD
   ansible.builtin.command:
     argv:
-      - git
+      - /usr/bin/git
+      - -c
+      - core.hooksPath=/dev/null
+      - -c
+      - core.fsmonitor=false
+      - -c
+      - core.attributesFile=/dev/null
+      - -c
+      - core.sparseCheckout=false
       - -C
       - "{{ playbook_dir }}"
       - ls-tree
@@ -77,6 +102,13 @@
       - tasks/datev_skr04
       - scripts/kivitendo-create-dataset.pl
       - sql/datev-skr04-source-fingerprint.sql
+  environment:
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_COUNT: "0"
+    GIT_NO_REPLACE_OBJECTS: "1"
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_PAGER: cat
   register: datev_skr04_tracked_runtime_inputs
   changed_when: false
 
@@ -101,11 +133,26 @@
 - name: Read reviewed HEAD blob for every tracked migration runtime input
   ansible.builtin.command:
     argv:
-      - git
+      - /usr/bin/git
+      - -c
+      - core.hooksPath=/dev/null
+      - -c
+      - core.fsmonitor=false
+      - -c
+      - core.attributesFile=/dev/null
+      - -c
+      - core.sparseCheckout=false
       - -C
       - "{{ playbook_dir }}"
       - rev-parse
       - "HEAD:{{ item }}"
+  environment:
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_COUNT: "0"
+    GIT_NO_REPLACE_OBJECTS: "1"
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_PAGER: cat
   loop: "{{ datev_skr04_tracked_runtime_inputs.stdout_lines }}"
   register: datev_skr04_runtime_head_blobs
   changed_when: false
@@ -115,12 +162,27 @@
 - name: Hash every working-tree migration runtime input directly
   ansible.builtin.command:
     argv:
-      - git
+      - /usr/bin/git
+      - -c
+      - core.hooksPath=/dev/null
+      - -c
+      - core.fsmonitor=false
+      - -c
+      - core.attributesFile=/dev/null
+      - -c
+      - core.sparseCheckout=false
       - -C
       - "{{ playbook_dir }}"
       - hash-object
       - --
       - "{{ item }}"
+  environment:
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_COUNT: "0"
+    GIT_NO_REPLACE_OBJECTS: "1"
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_PAGER: cat
   loop: "{{ datev_skr04_tracked_runtime_inputs.stdout_lines }}"
   register: datev_skr04_runtime_worktree_blobs
   changed_when: false
