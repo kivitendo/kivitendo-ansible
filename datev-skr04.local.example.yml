@@ -1,0 +1,33 @@
+---
+# Copy this file to datev-skr04.local.yml. The destination is ignored by Git.
+# Keep the real file outside version control and encrypt it with Ansible Vault
+# when it is retained beyond this controlled migration.
+#
+# First run: pin the exact Codex-reviewed orchestration commit, leave mode at
+# preflight and expected_source_fingerprint empty. Second run: copy the
+# fingerprint printed by that exact preflight, switch to apply and set the
+# exact apply confirmation token.
+
+datev_skr04_mode: preflight
+datev_skr04_apply_confirmation: ""
+datev_skr04_expected_orchestration_commit: ""
+datev_skr04_expected_source_fingerprint: ""
+
+datev_skr04_source_db: replace-with-existing-skr03-database
+datev_skr04_target_db: replace-with-new-skr04-database
+datev_skr04_target_client_name: Replace with new SKR04 client name
+
+datev_skr04_consultant_number: ""
+datev_skr04_client_number: ""
+# Optional until a DATEV-compatible five-digit debtor number has been agreed.
+datev_skr04_initial_debtor_number: ""
+
+# Optional protected override. When this remains empty in apply mode, the
+# playbook reads the existing password from the root-protected live
+# config/kivitendo.conf, keeps it only in a no_log Ansible fact and verifies it
+# against the source database before any write phase.
+datev_skr04_db_password: ""
+
+# These values implement the required short fiscal year for 2026.
+datev_skr04_closed_to: "2026-07-12"
+datev_skr04_fiscal_year_start: "2026-07-13"

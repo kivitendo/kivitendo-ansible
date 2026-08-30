@@ -1,0 +1,157 @@
+---
+- name: Require the approved 2026 short-fiscal-year boundary exactly
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_closed_to == '2026-07-12'
+      - datev_skr04_fiscal_year_start == '2026-07-13'
+    fail_msg: >-
+      This migration is approved only for books closed through 2026-07-12 and
+      the first fiscal-year day 2026-07-13. Adjacent but different dates are not
+      accepted through extra variables.
+
+- name: Bind the source authentication client to the inspected local endpoint
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_client_rows.query_result | length == 1
+      - datev_skr04_source_client_rows.query_result[0].dbname == datev_skr04_source_db
+      - datev_skr04_source_client_rows.query_result[0].dbhost == datev_skr04_db_host
+      - datev_skr04_source_client_rows.query_result[0].dbport | string == datev_skr04_db_port | string
+      - datev_skr04_source_client_rows.query_result[0].dbuser == datev_skr04_db_user
+    fail_msg: >-
+      The authentication client named for the source database does not point to
+      the same approved local PostgreSQL host, port and application role that
+      preflight fingerprints and snapshots. No target operation is permitted.
+
+- name: Inspect the installed kivitendo root without following symlinks
+  ansible.builtin.stat:
+    path: "{{ kivitendo_install_dir }}"
+    follow: false
+  register: datev_skr04_install_root_state
+
+- name: Require a real readable installation directory for complete recovery evidence
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_install_root_state.stat.exists | bool
+      - datev_skr04_install_root_state.stat.isdir | default(false) | bool
+      - not (datev_skr04_install_root_state.stat.islnk | default(false) | bool)
+      - datev_skr04_install_root_state.stat.readable | default(false) | bool
+    fail_msg: >-
+      The installed kivitendo root must be a real readable directory, not a
+      symbolic link. Otherwise the mandatory installation archive could contain
+      only a link instead of complete recovery evidence.
+
+- name: Inspect the installed revision and approved critical-file blob identities
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", rev-parse, HEAD]
+    - [git, -C, "{{ kivitendo_install_dir }}", rev-parse, "HEAD:SL/User.pm"]
+    - [git, -C, "{{ kivitendo_install_dir }}", hash-object, SL/User.pm]
+    - [git, -C, "{{ kivitendo_install_dir }}", rev-parse, "HEAD:sql/{{ datev_skr04_target_coa }}-chart.sql"]
+    - [git, -C, "{{ kivitendo_install_dir }}", hash-object, "sql/{{ datev_skr04_target_coa }}-chart.sql"]
+  register: datev_skr04_installed_integrity_commands
+  changed_when: false
+
+- name: Prove the live initializer and SKR04 chart match the pinned revision
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_installed_integrity_commands.results | length == 5
+      - datev_skr04_installed_integrity_commands.results[0].stdout == kivitendo_version
+      - datev_skr04_installed_integrity_commands.results[1].stdout == datev_skr04_installed_integrity_commands.results[2].stdout
+      - datev_skr04_installed_integrity_commands.results[3].stdout == datev_skr04_installed_integrity_commands.results[4].stdout
+    fail_msg: >-
+      The installed kivitendo HEAD, SL/User.pm initializer or native SKR04 chart
+      differs from the pinned reviewed revision. Unrelated documented local
+      customizations may remain, but these critical creation inputs may not drift.
+
+- name: Inspect critical live initialization files without following symlinks
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    checksum_algorithm: sha256
+  loop:
+    - "{{ kivitendo_install_dir }}/SL/User.pm"
+    - "{{ kivitendo_install_dir }}/sql/{{ datev_skr04_target_coa }}-chart.sql"
+  register: datev_skr04_critical_live_file_states
+
+- name: Require regular non-symlinked critical initialization files
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists | bool
+      - item.stat.isreg | default(false) | bool
+      - not (item.stat.islnk | default(false) | bool)
+      - item.stat.readable | default(false) | bool
+      - item.stat.checksum is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      Critical initialization input {{ item.item }} is missing, unreadable, not
+      a regular file or is reached through a symbolic link.
+  loop: "{{ datev_skr04_critical_live_file_states.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Bind critical initialization checksums for revalidation before execution
+  ansible.builtin.set_fact:
+    datev_skr04_live_user_pm_sha256: >-
+      {{ datev_skr04_critical_live_file_states.results[0].stat.checksum }}
+    datev_skr04_live_skr04_chart_sha256: >-
+      {{ datev_skr04_critical_live_file_states.results[1].stat.checksum }}
+
+- name: Count every defaults row in the protected source database
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_source_db }}"
+    query: SELECT count(*)::bigint AS defaults_rows FROM public.defaults;
+  register: datev_skr04_source_defaults_cardinality
+  changed_when: false
+
+- name: Require exactly one unambiguous source defaults row
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_defaults_cardinality.query_result | length == 1
+      - datev_skr04_source_defaults_cardinality.query_result[0].defaults_rows | int == 1
+    fail_msg: >-
+      The protected source must contain exactly one defaults row. A missing,
+      legacy-duplicated or corrupted defaults state is ambiguous and blocks
+      fingerprinting, snapshotting and target creation.
+
+- name: Inspect the complete persistent application-role capability set
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: |
+      SELECT
+        r.rolcanlogin,
+        r.rolcreatedb,
+        r.rolsuper,
+        r.rolcreaterole,
+        r.rolreplication,
+        r.rolbypassrls,
+        (SELECT count(*)::bigint
+           FROM pg_auth_members m
+          WHERE m.member = r.oid) AS granted_role_memberships
+      FROM pg_roles r
+      WHERE r.rolname = %(db_user)s;
+    named_args:
+      db_user: "{{ datev_skr04_db_user }}"
+  register: datev_skr04_complete_application_role_state
+  changed_when: false
+
+- name: Enforce the documented LOGIN and CREATEDB-only application role
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_complete_application_role_state.query_result | length == 1
+      - datev_skr04_complete_application_role_state.query_result[0].rolcanlogin | bool
+      - datev_skr04_complete_application_role_state.query_result[0].rolcreatedb | bool
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolsuper | bool)
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolcreaterole | bool)
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolreplication | bool)
+      - not (datev_skr04_complete_application_role_state.query_result[0].rolbypassrls | bool)
+      - datev_skr04_complete_application_role_state.query_result[0].granted_role_memberships | int == 0
+    fail_msg: >-
+      The persistent kivitendo database role must have LOGIN and CREATEDB only.
+      SUPERUSER, CREATEROLE, REPLICATION, BYPASSRLS and inherited role
+      memberships are prohibited before any migration write phase.

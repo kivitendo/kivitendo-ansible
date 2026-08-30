@@ -1,0 +1,173 @@
+name: Validate DATEV SKR04 migration
+
+on:
+  pull_request:
+    paths:
+      - ".gitignore"
+      - "ansible.cfg"
+      - "inventory"
+      - "main.yml"
+      - "vars.yml"
+      - "requirements.txt"
+      - "requirements.yml"
+      - "datev-skr04-*.yml"
+      - "tasks/datev_skr04/**"
+      - "scripts/bootstrap-debian-controller.sh"
+      - "scripts/run-datev-skr04-reviewed.sh"
+      - "scripts/kivitendo-create-dataset.pl"
+      - "sql/datev-skr04-source-fingerprint.sql"
+      - "docs/DATEV_SKR04_MIGRATION.md"
+      - "tests/validate_datev_skr04*.py"
+      - ".github/workflows/validate-datev-skr04.yml"
+  push:
+    branches:
+      - master
+      - "feature/datev-skr04-migration"
+    paths:
+      - ".gitignore"
+      - "ansible.cfg"
+      - "inventory"
+      - "main.yml"
+      - "vars.yml"
+      - "requirements.txt"
+      - "requirements.yml"
+      - "datev-skr04-*.yml"
+      - "tasks/datev_skr04/**"
+      - "scripts/bootstrap-debian-controller.sh"
+      - "scripts/run-datev-skr04-reviewed.sh"
+      - "scripts/kivitendo-create-dataset.pl"
+      - "sql/datev-skr04-source-fingerprint.sql"
+      - "docs/DATEV_SKR04_MIGRATION.md"
+      - "tests/validate_datev_skr04*.py"
+      - ".github/workflows/validate-datev-skr04.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: datev-skr04-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:13
+    timeout-minutes: 15
+
+    steps:
+      - name: Install bootstrap dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates \
+            git \
+            libdbd-pg-perl \
+            libdbi-perl \
+            perl \
+            python3 \
+            python3-pip \
+            python3-venv
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Check out the immutable event revision without external actions
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION_SHA: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          AUTH_HEADER="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w 0)"
+          git -c http.extraheader="AUTHORIZATION: basic ${AUTH_HEADER}" \
+            fetch --no-tags --depth=1 origin "${REVISION_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION_SHA}"
+
+      - name: Bootstrap the repository Ansible environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/bootstrap-debian-controller.sh
+
+      - name: Validate the migration safety and integrity contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python tests/validate_datev_skr04.py
+          .venv/bin/python tests/validate_datev_skr04_integrity.py
+
+      - name: Validate all migration YAML documents
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          files = [
+              Path("datev-skr04-defaults.yml"),
+              Path("datev-skr04.local.example.yml"),
+              Path("datev-skr04-migration.yml"),
+              *sorted(Path("tasks/datev_skr04").glob("*.yml")),
+          ]
+          for path in files:
+              yaml.safe_load(path.read_text(encoding="utf-8"))
+              print(f"valid YAML: {path}")
+          PY
+
+      - name: Run Ansible syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          .venv/bin/ansible-playbook --syntax-check -i inventory datev-skr04-migration.yml
+
+      - name: Compile-check the native Perl helper against interface stubs
+        shell: bash
+        run: |
+          set -euo pipefail
+          stub_dir="$(mktemp -d)"
+          kivi_dir="$(mktemp -d)"
+          trap 'rm -rf "$stub_dir" "$kivi_dir"' EXIT
+
+          mkdir -p "$stub_dir/SL/Layout" "$kivi_dir/modules/override" \
+            "$kivi_dir/modules/fallback" "$kivi_dir/sql"
+          touch "$kivi_dir/sql/Germany-DATEV-SKR04EU-chart.sql"
+
+          cat >"$stub_dir/CGI.pm" <<'PERL'
+          package CGI; sub import { } sub new { bless {}, shift } 1;
+          PERL
+          cat >"$stub_dir/SL/Form.pm" <<'PERL'
+          package SL::Form; sub import { } 1;
+          package Form; sub new { bless {}, shift } 1;
+          PERL
+          cat >"$stub_dir/SL/Layout/None.pm" <<'PERL'
+          package SL::Layout::None; sub new { bless {}, shift } 1;
+          PERL
+          cat >"$stub_dir/SL/Locale.pm" <<'PERL'
+          package SL::Locale; sub import { } 1;
+          package Locale; sub new { bless {}, shift } 1;
+          PERL
+          cat >"$stub_dir/SL/LXDebug.pm" <<'PERL'
+          package SL::LXDebug; sub import { } 1;
+          package LXDebug; sub new { bless {}, shift } 1;
+          PERL
+          cat >"$stub_dir/SL/LxOfficeConf.pm" <<'PERL'
+          package SL::LxOfficeConf; sub import { } 1; sub read { 1 } 1;
+          PERL
+          cat >"$stub_dir/SL/Request.pm" <<'PERL'
+          package SL::Request; sub new { bless {}, shift } 1;
+          PERL
+          cat >"$stub_dir/SL/User.pm" <<'PERL'
+          package SL::User; sub import { } 1;
+          package User; sub new { bless {}, shift } sub dbcreate { 1 } 1;
+          PERL
+
+          KIVITENDO_DIR="$kivi_dir" PERL5LIB="$stub_dir" \
+            perl -c scripts/kivitendo-create-dataset.pl

@@ -1,0 +1,53 @@
+---
+- name: Attempt FCGI restoration after target-write window
+  ansible.builtin.service:
+    name: "{{ datev_skr04_target_window_fcgi_service_name }}"
+    state: started
+  register: datev_skr04_target_window_fcgi_restore
+  failed_when: false
+  when: datev_skr04_target_window_fcgi_was_running | default(false) | bool
+
+- name: Attempt task-server restoration after target-write window
+  ansible.builtin.service:
+    name: "{{ datev_skr04_target_window_task_service_name }}"
+    state: started
+  register: datev_skr04_target_window_task_restore
+  failed_when: false
+  when: datev_skr04_target_window_task_was_running | default(false) | bool
+
+- name: Attempt Apache restoration after target-write window
+  ansible.builtin.service:
+    name: apache2
+    state: started
+  register: datev_skr04_target_window_apache_restore
+  failed_when: false
+  when: datev_skr04_target_window_apache_was_running | default(false) | bool
+
+- name: Re-read service state after every target-window restoration attempt
+  ansible.builtin.service_facts:
+
+- name: Fail only after all target-window restoration attempts completed
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) or
+        (
+          not (datev_skr04_target_window_fcgi_restore.failed | default(false) | bool) and
+          ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+        )
+      - >-
+        not (datev_skr04_target_window_task_was_running | default(false) | bool) or
+        (
+          not (datev_skr04_target_window_task_restore.failed | default(false) | bool) and
+          ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
+        )
+      - >-
+        not (datev_skr04_target_window_apache_was_running | default(false) | bool) or
+        (
+          not (datev_skr04_target_window_apache_restore.failed | default(false) | bool) and
+          ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
+        )
+    fail_msg: >-
+      One or more services that were running before the target-write freeze could
+      not be restored. Every restoration attempt completed; production service
+      recovery must be handled explicitly before any further migration action.

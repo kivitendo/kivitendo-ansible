@@ -1,0 +1,404 @@
+---
+- name: Re-inspect the repository-native helper immediately before privileged use
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/scripts/kivitendo-create-dataset.pl"
+    follow: false
+    checksum_algorithm: sha256
+  register: datev_skr04_helper_before_execution
+
+- name: Assert the reviewed helper did not change after preflight
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_helper_before_execution.stat.exists | bool
+      - datev_skr04_helper_before_execution.stat.isreg | bool
+      - not (datev_skr04_helper_before_execution.stat.islnk | default(false) | bool)
+      - datev_skr04_helper_before_execution.stat.checksum == datev_skr04_helper_source.stat.checksum
+    fail_msg: >-
+      The repository-native dataset helper changed after preflight or became an
+      unsafe path. No temporary privilege or target database was created.
+
+- name: Locate the active PostgreSQL host-based authentication file
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: SHOW hba_file;
+  register: datev_skr04_hba_file_query
+  changed_when: false
+
+- name: Generate an expiring ephemeral PostgreSQL credential
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - >-
+        import datetime, secrets;
+        print(secrets.token_urlsafe(48));
+        print((datetime.datetime.now(datetime.timezone.utc)
+        + datetime.timedelta(minutes=15)).isoformat())
+  register: datev_skr04_ephemeral_credential_command
+  changed_when: false
+  no_log: true
+
+- name: Derive the ephemeral PostgreSQL migration identity
+  ansible.builtin.set_fact:
+    datev_skr04_ephemeral_role: >-
+      kivi_migrate_{{ datev_skr04_run_id | regex_replace('[^A-Za-z0-9_]', '_') }}
+    datev_skr04_ephemeral_password: "{{ datev_skr04_ephemeral_credential_command.stdout_lines[0] }}"
+    datev_skr04_ephemeral_expiry: "{{ datev_skr04_ephemeral_credential_command.stdout_lines[1] }}"
+  no_log: true
+
+- name: Create the isolated SKR04 dataset with temporary least-duration elevation
+  block:
+    - name: Create an expiring ephemeral PostgreSQL superuser for required upgrade scripts
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        name: "{{ datev_skr04_ephemeral_role }}"
+        password: "{{ datev_skr04_ephemeral_password }}"
+        expires: "{{ datev_skr04_ephemeral_expiry }}"
+        role_attr_flags: LOGIN,SUPERUSER,NOCREATEDB,NOCREATEROLE,NOREPLICATION
+        state: present
+      no_log: true
+
+    - name: Add a temporary SCRAM rule restricted to the ephemeral role
+      community.postgresql.postgresql_pg_hba:
+        dest: "{{ datev_skr04_hba_file_query.query_result[0].hba_file }}"
+        contype: host
+        databases: all
+        users: "{{ datev_skr04_ephemeral_role }}"
+        address: 127.0.0.1/32
+        method: scram-sha-256
+        state: present
+        create: false
+      no_log: true
+
+    - name: Reload the exact bound PostgreSQL cluster for temporary HBA access
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        query: SELECT pg_reload_conf() AS reloaded;
+      register: datev_skr04_ephemeral_access_reload
+      changed_when: true
+
+    - name: Require the temporary HBA reload to have reached the bound cluster
+      ansible.builtin.assert:
+        that:
+          - datev_skr04_ephemeral_access_reload.query_result | length == 1
+          - datev_skr04_ephemeral_access_reload.query_result[0].reloaded | bool
+        fail_msg: >-
+          PostgreSQL did not acknowledge pg_reload_conf() on the bound Unix
+          socket and port. Native initialization will not be attempted.
+
+    - name: Create the target through kivitendo's native dataset initializer
+      ansible.builtin.command:
+        argv:
+          - perl
+          - "{{ playbook_dir }}/scripts/kivitendo-create-dataset.pl"
+      environment:
+        KIVITENDO_DIR: "{{ kivitendo_install_dir }}"
+        KIVITENDO_DB_HOST: "{{ datev_skr04_db_host }}"
+        KIVITENDO_DB_PORT: "{{ datev_skr04_db_port | string }}"
+        KIVITENDO_DB_USER: "{{ datev_skr04_db_user }}"
+        KIVITENDO_DB_PASSWORD: "{{ datev_skr04_effective_db_password }}"
+        KIVITENDO_SOURCE_DB: "{{ datev_skr04_source_db }}"
+        KIVITENDO_TARGET_DB: "{{ datev_skr04_target_db }}"
+        KIVITENDO_RUN_ID: "{{ datev_skr04_run_id }}"
+        KIVITENDO_CHART: "{{ datev_skr04_target_coa }}"
+        KIVITENDO_SUPERUSER: "{{ datev_skr04_ephemeral_role }}"
+        KIVITENDO_SUPERUSER_PASSWORD: "{{ datev_skr04_ephemeral_password }}"
+        KIVITENDO_DEFAULT_CURRENCY: "{{ datev_skr04_default_currency }}"
+        KIVITENDO_PRECISION: "{{ datev_skr04_precision }}"
+        KIVITENDO_ACCOUNTING_METHOD: "{{ datev_skr04_accounting_method }}"
+        KIVITENDO_PROFIT_DETERMINATION: "{{ datev_skr04_profit_determination }}"
+        KIVITENDO_INVENTORY_SYSTEM: "{{ datev_skr04_inventory_system }}"
+        KIVITENDO_FEATURE_BALANCE: "{{ datev_skr04_feature_balance | bool | ternary('1', '0') }}"
+        KIVITENDO_FEATURE_DATEV: "{{ datev_skr04_feature_datev | bool | ternary('1', '0') }}"
+        KIVITENDO_FEATURE_ERFOLGSRECHNUNG: "{{ datev_skr04_feature_erfolgsrechnung | bool | ternary('1', '0') }}"
+        KIVITENDO_FEATURE_EURECHNUNG: "{{ datev_skr04_feature_eurechnung | bool | ternary('1', '0') }}"
+        KIVITENDO_FEATURE_USTVA: "{{ datev_skr04_feature_ustva | bool | ternary('1', '0') }}"
+      register: datev_skr04_dataset_creation
+      changed_when: true
+      no_log: true
+
+  always:
+    - name: Disable an existing ephemeral role before any other cleanup attempt
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        query: |
+          DO $migration$
+          BEGIN
+            IF EXISTS (
+              SELECT 1 FROM pg_roles
+              WHERE rolname = '{{ datev_skr04_ephemeral_role }}'
+            ) THEN
+              EXECUTE format(
+                'ALTER ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',
+                '{{ datev_skr04_ephemeral_role }}'
+              );
+            END IF;
+          END
+          $migration$;
+      register: datev_skr04_ephemeral_role_disabled
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Reassign any promoted-target objects accidentally owned by the ephemeral role
+      become_user: postgres
+      ansible.builtin.command:
+        argv:
+          - psql
+          - --no-psqlrc
+          - --set=ON_ERROR_STOP=1
+          - --host=/var/run/postgresql
+          - "--port={{ datev_skr04_db_port }}"
+          - "--dbname={{ datev_skr04_target_db }}"
+          - --command
+          - >-
+            REASSIGN OWNED BY "{{ datev_skr04_ephemeral_role }}" TO "{{ datev_skr04_db_user }}";
+            DROP OWNED BY "{{ datev_skr04_ephemeral_role }}";
+      register: datev_skr04_reassign_ephemeral_objects
+      changed_when: datev_skr04_reassign_ephemeral_objects.rc == 0
+      failed_when: false
+      no_log: true
+
+    - name: Remove the temporary PostgreSQL access rule
+      community.postgresql.postgresql_pg_hba:
+        dest: "{{ datev_skr04_hba_file_query.query_result[0].hba_file }}"
+        contype: host
+        databases: all
+        users: "{{ datev_skr04_ephemeral_role }}"
+        address: 127.0.0.1/32
+        method: scram-sha-256
+        state: absent
+        create: false
+      register: datev_skr04_ephemeral_hba_removed
+      failed_when: false
+      no_log: true
+
+    - name: Reload the exact bound PostgreSQL cluster after temporary HBA removal
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        query: SELECT pg_reload_conf() AS reloaded;
+      register: datev_skr04_ephemeral_cleanup_reload
+      changed_when: true
+      failed_when: false
+
+    - name: Remove the ephemeral PostgreSQL role
+      become_user: postgres
+      community.postgresql.postgresql_user:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        name: "{{ datev_skr04_ephemeral_role }}"
+        state: absent
+        fail_on_user: false
+      register: datev_skr04_ephemeral_role_removed
+      failed_when: false
+      no_log: true
+
+    - name: Verify no temporary role or active HBA rule remains
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        query: |
+          SELECT
+            NOT EXISTS (
+              SELECT 1 FROM pg_roles WHERE rolname = %(role_name)s
+            ) AS role_removed,
+            NOT EXISTS (
+              SELECT 1
+              FROM pg_hba_file_rules
+              WHERE %(role_name)s = ANY(user_name)
+                AND error IS NULL
+            ) AS hba_rule_removed;
+        named_args:
+          role_name: "{{ datev_skr04_ephemeral_role }}"
+      register: datev_skr04_ephemeral_cleanup_verification
+      changed_when: false
+      no_log: true
+
+    - name: Assert temporary PostgreSQL elevation was completely removed
+      ansible.builtin.assert:
+        that:
+          - not (datev_skr04_ephemeral_cleanup_reload.failed | default(true) | bool)
+          - datev_skr04_ephemeral_cleanup_reload.query_result | default([]) | length == 1
+          - datev_skr04_ephemeral_cleanup_reload.query_result[0].reloaded | bool
+          - datev_skr04_ephemeral_cleanup_verification.query_result | length == 1
+          - datev_skr04_ephemeral_cleanup_verification.query_result[0].role_removed | bool
+          - datev_skr04_ephemeral_cleanup_verification.query_result[0].hba_rule_removed | bool
+        fail_msg: >-
+          Temporary PostgreSQL elevation cleanup is incomplete on the exact
+          bound cluster. The apply run must not proceed to client registration.
+      no_log: true
+
+    - name: Clear the ephemeral credential from Ansible facts
+      ansible.builtin.set_fact:
+        datev_skr04_ephemeral_password: "redacted-and-discarded"
+        datev_skr04_ephemeral_expiry: "redacted-and-discarded"
+      no_log: true
+
+- name: Confirm the fresh target contains no DATEV profile before configuration
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_target_db }}"
+    query: |
+      SELECT
+        (SELECT count(*)::bigint FROM defaults) AS defaults_rows,
+        (SELECT count(*)::bigint FROM datev) AS datev_rows,
+        (SELECT count(*)::bigint FROM datev_skr04_migration_marker) AS marker_rows,
+        (SELECT run_id FROM datev_skr04_migration_marker LIMIT 1) AS marker_run_id;
+  register: datev_skr04_preconfiguration_state
+  changed_when: false
+  no_log: true
+
+- name: Refuse to replace any pre-existing target DATEV profile
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_preconfiguration_state.query_result | length == 1
+      - datev_skr04_preconfiguration_state.query_result[0].defaults_rows | int == 1
+      - datev_skr04_preconfiguration_state.query_result[0].datev_rows | int == 0
+      - datev_skr04_preconfiguration_state.query_result[0].marker_rows | int == 1
+      - datev_skr04_preconfiguration_state.query_result[0].marker_run_id == datev_skr04_run_id
+    fail_msg: >-
+      The run-owned target is no longer pristine or already has a DATEV profile.
+      Existing target configuration is never deleted or replaced.
+  no_log: true
+
+- name: Apply the approved fiscal boundary and DATEV identifiers to the new target
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_target_db }}"
+    query: |
+      BEGIN;
+      UPDATE defaults
+         SET coa = %(coa)s,
+             closedto = %(closed_to)s::date,
+             accounting_method = %(accounting_method)s,
+             profit_determination = %(profit_determination)s,
+             feature_datev = TRUE,
+             datev_check_on_sales_invoice = TRUE,
+             datev_check_on_purchase_invoice = TRUE,
+             datev_check_on_ar_transaction = TRUE,
+             datev_check_on_ap_transaction = TRUE,
+             datev_check_on_gl_transaction = TRUE;
+      INSERT INTO datev (beraternr, mandantennr)
+      VALUES (%(consultant_number)s, %(client_number)s);
+      COMMIT;
+    named_args:
+      coa: "{{ datev_skr04_target_coa }}"
+      closed_to: "{{ datev_skr04_closed_to }}"
+      accounting_method: "{{ datev_skr04_accounting_method }}"
+      profit_determination: "{{ datev_skr04_profit_determination }}"
+      consultant_number: "{{ datev_skr04_consultant_number }}"
+      client_number: "{{ datev_skr04_client_number }}"
+  no_log: true
+
+- name: Re-inspect the sidecar directory and target-specific path before writing
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ datev_skr04_sidecar_config_dir }}"
+    - "{{ datev_skr04_sidecar_config_file }}"
+  register: datev_skr04_sidecar_write_states
+
+- name: Refuse an unsafe sidecar directory or occupied target-specific path
+  ansible.builtin.assert:
+    that:
+      - not (datev_skr04_sidecar_write_states.results[0].stat.islnk | default(false) | bool)
+      - >-
+        not (datev_skr04_sidecar_write_states.results[0].stat.exists | bool) or
+        (
+          datev_skr04_sidecar_write_states.results[0].stat.isdir | default(false) | bool and
+          datev_skr04_sidecar_write_states.results[0].stat.pw_name == 'root' and
+          datev_skr04_sidecar_write_states.results[0].stat.mode is match('^0?[0-7][0145][0145]$')
+        )
+      - not (datev_skr04_sidecar_write_states.results[1].stat.exists | bool)
+      - not (datev_skr04_sidecar_write_states.results[1].stat.islnk | default(false) | bool)
+    fail_msg: >-
+      The sidecar directory became unsafe or the target-specific path appeared
+      after preflight. No existing path will be overwritten or followed.
+
+- name: Create the protected DATEV sidecar configuration directory when absent
+  ansible.builtin.file:
+    path: "{{ datev_skr04_sidecar_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: not (datev_skr04_sidecar_write_states.results[0].stat.exists | bool)
+
+- name: Write the target-specific transfer contract without adopting an existing file
+  ansible.builtin.copy:
+    dest: "{{ datev_skr04_sidecar_config_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+    content: |
+      version: 2
+      workflow_marker: "kivitendo-datev-skr04-v1"
+      migration_run_id: "{{ datev_skr04_run_id }}"
+      source_database: "{{ datev_skr04_source_db }}"
+      target_database: "{{ datev_skr04_target_db }}"
+      kivitendo_database: "{{ datev_skr04_target_db }}"
+      chart_of_accounts: "{{ datev_skr04_target_coa }}"
+      datev_chart_code: "04"
+      account_length: {{ datev_skr04_account_length }}
+      fiscal_year_start_2026: "{{ datev_skr04_fiscal_year_start }}"
+      closed_through: "{{ datev_skr04_closed_to }}"
+      consultant_number: "{{ datev_skr04_consultant_number }}"
+      client_number: "{{ datev_skr04_client_number }}"
+      reserved_initial_debtor_number: "{{ datev_skr04_initial_debtor_number }}"
+      transfer_method: "DATEV Buchungsdatenservice"
+      native_kivitendo_export_allowed: false
+      native_export_block_reason: >-
+        The pinned native exporter emits EXTF 510 / Buchungsstapel 7 and derives
+        the fiscal-year start as January 1. It must not be used for the 2026
+        short fiscal year.
+      required_extf_main_version: 700
+      required_booking_batch_version: 13
+  register: datev_skr04_sidecar_contract_write
+  no_log: true
+
+- name: Inspect the newly created target-specific transfer contract
+  ansible.builtin.stat:
+    path: "{{ datev_skr04_sidecar_config_file }}"
+    follow: false
+    checksum_algorithm: sha256
+  register: datev_skr04_sidecar_contract_state
+
+- name: Assert the workflow created a protected regular sidecar contract
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_sidecar_contract_write.changed | bool
+      - datev_skr04_sidecar_contract_state.stat.exists | bool
+      - datev_skr04_sidecar_contract_state.stat.isreg | bool
+      - not (datev_skr04_sidecar_contract_state.stat.islnk | default(false) | bool)
+      - datev_skr04_sidecar_contract_state.stat.pw_name == 'root'
+      - datev_skr04_sidecar_contract_state.stat.gr_name == 'root'
+      - datev_skr04_sidecar_contract_state.stat.mode == '0600'
+      - datev_skr04_sidecar_contract_state.stat.checksum is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      The target-specific sidecar contract was not newly created as a protected
+      regular file. Target verification and all cutover work are blocked.
+  no_log: true

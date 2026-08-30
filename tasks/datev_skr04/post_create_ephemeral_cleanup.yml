@@ -1,0 +1,250 @@
+---
+- name: Inspect secondary temporary-elevation cleanup state
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: |
+      SELECT
+        EXISTS (
+          SELECT 1 FROM pg_roles WHERE rolname = %(role_name)s
+        ) AS role_exists,
+        EXISTS (
+          SELECT 1 FROM pg_database WHERE datname = %(staging_db)s
+        ) AS staging_exists,
+        EXISTS (
+          SELECT 1 FROM pg_database WHERE datname = %(target_db)s
+        ) AS target_exists,
+        EXISTS (
+          SELECT 1
+          FROM pg_hba_file_rules
+          WHERE %(role_name)s = ANY(user_name)
+            AND error IS NULL
+        ) AS hba_rule_exists;
+    named_args:
+      role_name: "{{ datev_skr04_ephemeral_role }}"
+      staging_db: "{{ datev_skr04_staging_db }}"
+      target_db: "{{ datev_skr04_target_db }}"
+  register: datev_skr04_secondary_cleanup_state
+  changed_when: false
+  no_log: true
+
+- name: Initialize the evidence-preserving ownership cleanup target
+  ansible.builtin.set_fact:
+    datev_skr04_ephemeral_cleanup_database: ""
+  no_log: true
+
+- name: Disable a surviving temporary role before any ownership inspection
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: |
+      DO $migration$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_roles WHERE rolname = %(role_name)s
+        ) THEN
+          EXECUTE format(
+            'ALTER ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',
+            %(role_name)s
+          );
+        END IF;
+      END
+      $migration$;
+    named_args:
+      role_name: "{{ datev_skr04_ephemeral_role }}"
+  register: datev_skr04_secondary_role_disabled
+  changed_when: false
+  failed_when: false
+  when: datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+  no_log: true
+
+- name: Select the exact deterministic staging database for ownership cleanup
+  ansible.builtin.set_fact:
+    datev_skr04_ephemeral_cleanup_database: "{{ datev_skr04_staging_db }}"
+  when:
+    - datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+    - datev_skr04_secondary_cleanup_state.query_result[0].staging_exists | bool
+  no_log: true
+
+- name: Inspect target ownership only when native promotion removed the staging database
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_target_db }}"
+    query: |
+      SELECT
+        count(*)::integer AS marker_rows,
+        bool_and(
+          marker_key = 'kivitendo-datev-skr04-v1'
+          AND run_id = %(run_id)s
+          AND source_database = %(source_db)s
+          AND target_database = %(target_db)s
+        ) AS marker_matches
+      FROM datev_skr04_migration_marker;
+    named_args:
+      run_id: "{{ datev_skr04_run_id }}"
+      source_db: "{{ datev_skr04_source_db }}"
+      target_db: "{{ datev_skr04_target_db }}"
+  register: datev_skr04_secondary_target_marker
+  changed_when: false
+  failed_when: false
+  when:
+    - datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+    - not (datev_skr04_secondary_cleanup_state.query_result[0].staging_exists | bool)
+    - datev_skr04_secondary_cleanup_state.query_result[0].target_exists | bool
+  no_log: true
+
+- name: Select a promoted target only after exact run ownership is proven
+  ansible.builtin.set_fact:
+    datev_skr04_ephemeral_cleanup_database: "{{ datev_skr04_target_db }}"
+  when:
+    - datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+    - not (datev_skr04_secondary_cleanup_state.query_result[0].staging_exists | bool)
+    - datev_skr04_secondary_cleanup_state.query_result[0].target_exists | bool
+    - not (datev_skr04_secondary_target_marker.failed | default(true) | bool)
+    - datev_skr04_secondary_target_marker.query_result | default([]) | length == 1
+    - datev_skr04_secondary_target_marker.query_result[0].marker_rows | int == 1
+    - datev_skr04_secondary_target_marker.query_result[0].marker_matches | bool
+  no_log: true
+
+- name: Reassign temporary-role objects in the exact staging or run-owned target
+  become_user: postgres
+  ansible.builtin.command:
+    argv:
+      - psql
+      - --no-psqlrc
+      - --set=ON_ERROR_STOP=1
+      - --host=/var/run/postgresql
+      - "--port={{ datev_skr04_db_port }}"
+      - "--dbname={{ datev_skr04_ephemeral_cleanup_database }}"
+      - --command
+      - >-
+        REASSIGN OWNED BY "{{ datev_skr04_ephemeral_role }}"
+        TO "{{ datev_skr04_db_user }}";
+        DROP OWNED BY "{{ datev_skr04_ephemeral_role }}";
+  register: datev_skr04_secondary_reassign
+  changed_when: datev_skr04_secondary_reassign.rc == 0
+  failed_when: false
+  when:
+    - datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+    - datev_skr04_ephemeral_cleanup_database | length > 0
+  no_log: true
+
+- name: Remove any surviving temporary PostgreSQL access rule
+  community.postgresql.postgresql_pg_hba:
+    dest: "{{ datev_skr04_hba_file_query.query_result[0].hba_file }}"
+    contype: host
+    databases: all
+    users: "{{ datev_skr04_ephemeral_role }}"
+    address: 127.0.0.1/32
+    method: scram-sha-256
+    state: absent
+    create: false
+  register: datev_skr04_secondary_hba_removed
+  failed_when: false
+  when:
+    - datev_skr04_hba_file_query is defined
+    - datev_skr04_hba_file_query.query_result | default([]) | length == 1
+    - >-
+      datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+      or datev_skr04_secondary_cleanup_state.query_result[0].hba_rule_exists | bool
+  no_log: true
+
+- name: Reload the exact bound PostgreSQL cluster after secondary HBA cleanup
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: SELECT pg_reload_conf() AS reloaded;
+  register: datev_skr04_secondary_cleanup_reload
+  changed_when: true
+  failed_when: false
+  when:
+    - >-
+      datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+      or datev_skr04_secondary_cleanup_state.query_result[0].hba_rule_exists | bool
+
+- name: Remove the detached temporary PostgreSQL role
+  become_user: postgres
+  community.postgresql.postgresql_user:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    name: "{{ datev_skr04_ephemeral_role }}"
+    state: absent
+    fail_on_user: true
+  register: datev_skr04_secondary_role_removed
+  failed_when: false
+  when:
+    - datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+    - >-
+      not (
+        datev_skr04_secondary_cleanup_state.query_result[0].staging_exists | bool
+        or datev_skr04_secondary_cleanup_state.query_result[0].target_exists | bool
+      )
+      or (
+        datev_skr04_ephemeral_cleanup_database | length > 0
+        and datev_skr04_secondary_reassign.rc | default(1) | int == 0
+      )
+  no_log: true
+
+- name: Verify no temporary privilege or active HBA rule survives secondary cleanup
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: |
+      SELECT
+        NOT EXISTS (
+          SELECT 1 FROM pg_roles WHERE rolname = %(role_name)s
+        ) AS role_removed,
+        COALESCE((
+          SELECT NOT rolsuper AND NOT rolcanlogin
+          FROM pg_roles
+          WHERE rolname = %(role_name)s
+        ), TRUE) AS role_not_privileged,
+        NOT EXISTS (
+          SELECT 1
+          FROM pg_hba_file_rules
+          WHERE %(role_name)s = ANY(user_name)
+            AND error IS NULL
+        ) AS hba_rule_removed;
+    named_args:
+      role_name: "{{ datev_skr04_ephemeral_role }}"
+  register: datev_skr04_secondary_cleanup_verification
+  changed_when: false
+  no_log: true
+
+- name: Assert evidence-preserving secondary temporary-elevation cleanup is complete
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_secondary_cleanup_verification.query_result | length == 1
+      - datev_skr04_secondary_cleanup_verification.query_result[0].role_not_privileged | bool
+      - datev_skr04_secondary_cleanup_verification.query_result[0].hba_rule_removed | bool
+      - datev_skr04_secondary_cleanup_verification.query_result[0].role_removed | bool
+      - >-
+        not (
+          datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+          or datev_skr04_secondary_cleanup_state.query_result[0].hba_rule_exists | bool
+        ) or
+        (
+          not (datev_skr04_secondary_cleanup_reload.failed | default(true) | bool) and
+          datev_skr04_secondary_cleanup_reload.query_result | default([]) | length == 1 and
+          datev_skr04_secondary_cleanup_reload.query_result[0].reloaded | bool
+        )
+      - >-
+        datev_skr04_ephemeral_cleanup_database | length == 0
+        or datev_skr04_secondary_reassign.rc | default(1) | int == 0
+    fail_msg: >-
+      Temporary PostgreSQL elevation or HBA cleanup could not be applied to the
+      exact bound cluster safely. Any surviving role is disabled and the exact
+      staging/target database is preserved, but no authentication registration,
+      access or cutover may proceed.
+  no_log: true

@@ -1,0 +1,28 @@
+---
+- name: Re-read the complete source fingerprint in the frozen target-write window
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_source_db }}"
+    query: "{{ datev_skr04_source_fingerprint_query }}"
+  register: datev_skr04_pre_target_source_fingerprint_raw
+  changed_when: false
+
+- name: Calculate the frozen pre-target source fingerprint
+  ansible.builtin.set_fact:
+    datev_skr04_pre_target_source_fingerprint: >-
+      {{ datev_skr04_pre_target_source_fingerprint_raw.query_result[0]
+         | to_json
+         | hash('sha256') }}
+
+- name: Require source identity to match preflight and snapshot before first target write
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_pre_target_source_fingerprint == datev_skr04_expected_source_fingerprint
+      - datev_skr04_pre_target_source_fingerprint == datev_skr04_snapshot_fingerprint
+      - datev_skr04_pre_target_source_fingerprint == datev_skr04_source_fingerprint_actual
+    fail_msg: >-
+      The source changed after the mandatory snapshot. Because write-capable
+      services are frozen, this is the final complete source-state gate before
+      any target database, sidecar or authentication write.

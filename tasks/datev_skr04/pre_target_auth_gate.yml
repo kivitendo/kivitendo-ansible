@@ -1,0 +1,67 @@
+---
+- name: Re-read source and target authentication state inside the frozen pre-write window
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      SELECT
+        c.id,
+        md5(row_to_json(c)::text) AS source_client_digest,
+        (SELECT count(*) FROM auth.clients_users WHERE client_id = c.id) AS source_users,
+        (SELECT COALESCE(md5(string_agg(cu.user_id::text, ',' ORDER BY cu.user_id)), md5(''))
+           FROM auth.clients_users cu WHERE cu.client_id = c.id) AS source_users_digest,
+        (SELECT count(*) FROM auth.clients_groups WHERE client_id = c.id) AS source_groups,
+        (SELECT COALESCE(md5(string_agg(cg.group_id::text, ',' ORDER BY cg.group_id)), md5(''))
+           FROM auth.clients_groups cg WHERE cg.client_id = c.id) AS source_groups_digest,
+        (SELECT count(*) FROM auth.clients tc
+          WHERE tc.dbname = %(target_db)s OR tc.name = %(target_name)s) AS target_conflicts
+      FROM auth.clients c
+      WHERE c.id = %(source_id)s
+        AND c.dbname = %(source_db)s
+        AND c.dbhost = %(source_host)s
+        AND c.dbport::text = %(source_port)s
+        AND c.dbuser = %(source_user)s;
+    named_args:
+      source_id: "{{ datev_skr04_source_client_id | int }}"
+      source_db: "{{ datev_skr04_source_db }}"
+      source_host: "{{ datev_skr04_db_host }}"
+      source_port: "{{ datev_skr04_db_port | string }}"
+      source_user: "{{ datev_skr04_db_user }}"
+      target_db: "{{ datev_skr04_target_db }}"
+      target_name: "{{ datev_skr04_target_client_name }}"
+  register: datev_skr04_pre_target_auth_state
+  changed_when: false
+  no_log: true
+
+- name: Require the snapshotted source auth baseline and unused target identity before creation
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_pre_target_auth_state.query_result | length == 1
+      - datev_skr04_pre_target_auth_state.query_result[0].source_client_digest == datev_skr04_source_client_digest_preflight
+      - datev_skr04_pre_target_auth_state.query_result[0].source_users | int == datev_skr04_source_user_count_preflight | int
+      - datev_skr04_pre_target_auth_state.query_result[0].source_users_digest == datev_skr04_source_user_digest_preflight
+      - datev_skr04_pre_target_auth_state.query_result[0].source_groups | int == datev_skr04_source_group_count_preflight | int
+      - datev_skr04_pre_target_auth_state.query_result[0].source_groups_digest == datev_skr04_source_group_digest_preflight
+      - datev_skr04_pre_target_auth_state.query_result[0].target_conflicts | int == 0
+    fail_msg: >-
+      The source authentication client or its user/group mappings changed after
+      preflight, its endpoint no longer matches the inspected local database, or
+      the requested target auth identity became occupied. Refusing target
+      creation before any staging database, sidecar or auth row is written.
+  no_log: true
+
+- name: Bind the frozen authentication revalidation to this run
+  ansible.builtin.set_fact:
+    datev_skr04_pre_target_auth_verified:
+      verified: true
+      source_client_id: "{{ datev_skr04_source_client_id | int }}"
+      source_client_digest: "{{ datev_skr04_source_client_digest_preflight }}"
+      source_user_count: "{{ datev_skr04_source_user_count_preflight | int }}"
+      source_user_digest: "{{ datev_skr04_source_user_digest_preflight }}"
+      source_group_count: "{{ datev_skr04_source_group_count_preflight | int }}"
+      source_group_digest: "{{ datev_skr04_source_group_digest_preflight }}"
+      target_database: "{{ datev_skr04_target_db }}"
+      target_client_name: "{{ datev_skr04_target_client_name }}"
+  no_log: true

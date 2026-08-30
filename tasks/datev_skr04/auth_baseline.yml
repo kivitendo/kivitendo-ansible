@@ -1,0 +1,46 @@
+---
+- name: Read the protected source authentication state
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: "{{ datev_skr04_auth_db }}"
+    query: |
+      SELECT
+        c.id,
+        md5(row_to_json(c)::text) AS source_client_digest,
+        (SELECT count(*) FROM auth.clients_users WHERE client_id = c.id) AS source_users,
+        (SELECT COALESCE(md5(string_agg(cu.user_id::text, ',' ORDER BY cu.user_id)), md5(''))
+           FROM auth.clients_users cu WHERE cu.client_id = c.id) AS source_users_digest,
+        (SELECT count(*) FROM auth.clients_groups WHERE client_id = c.id) AS source_groups,
+        (SELECT COALESCE(md5(string_agg(cg.group_id::text, ',' ORDER BY cg.group_id)), md5(''))
+           FROM auth.clients_groups cg WHERE cg.client_id = c.id) AS source_groups_digest
+      FROM auth.clients c
+      WHERE c.id = %(source_id)s
+        AND c.dbname = %(source_db)s;
+    named_args:
+      source_id: "{{ datev_skr04_source_client_id | int }}"
+      source_db: "{{ datev_skr04_source_db }}"
+  register: datev_skr04_source_auth_preflight
+  changed_when: false
+
+- name: Assert the source authentication identity is unambiguous
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_source_auth_preflight.query_result | length == 1
+    fail_msg: >-
+      The protected source authentication client or its database binding changed
+      during preflight. No target operation is permitted.
+
+- name: Bind the exact source authentication state to this run
+  ansible.builtin.set_fact:
+    datev_skr04_source_client_digest_preflight: >-
+      {{ datev_skr04_source_auth_preflight.query_result[0].source_client_digest }}
+    datev_skr04_source_user_count_preflight: >-
+      {{ datev_skr04_source_auth_preflight.query_result[0].source_users | int }}
+    datev_skr04_source_user_digest_preflight: >-
+      {{ datev_skr04_source_auth_preflight.query_result[0].source_users_digest }}
+    datev_skr04_source_group_count_preflight: >-
+      {{ datev_skr04_source_auth_preflight.query_result[0].source_groups | int }}
+    datev_skr04_source_group_digest_preflight: >-
+      {{ datev_skr04_source_auth_preflight.query_result[0].source_groups_digest }}

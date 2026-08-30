@@ -1,0 +1,440 @@
+---
+- name: Set the immutable backup directory for this run
+  ansible.builtin.set_fact:
+    datev_skr04_backup_directory: "{{ datev_skr04_backup_root }}/{{ datev_skr04_run_id }}"
+
+- name: Re-inspect backup path components and the unique run directory
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /var/backups/kivitendo
+    - "{{ datev_skr04_backup_root }}"
+    - "{{ datev_skr04_backup_directory }}"
+  register: datev_skr04_snapshot_directory_states
+
+- name: Refuse backup symlinks, non-directories or a reused run directory
+  ansible.builtin.assert:
+    that:
+      - not (datev_skr04_snapshot_directory_states.results[0].stat.islnk | default(false) | bool)
+      - not (datev_skr04_snapshot_directory_states.results[0].stat.exists | bool) or (datev_skr04_snapshot_directory_states.results[0].stat.isdir | default(false) | bool)
+      - not (datev_skr04_snapshot_directory_states.results[0].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[0].stat.pw_name == 'root'
+      - not (datev_skr04_snapshot_directory_states.results[0].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[0].stat.gr_name == 'root'
+      - not (datev_skr04_snapshot_directory_states.results[0].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[0].stat.mode == '0755'
+      - not (datev_skr04_snapshot_directory_states.results[1].stat.islnk | default(false) | bool)
+      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or (datev_skr04_snapshot_directory_states.results[1].stat.isdir | default(false) | bool)
+      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.pw_name == 'root'
+      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.gr_name == 'postgres'
+      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.mode == '0710'
+      - not (datev_skr04_snapshot_directory_states.results[2].stat.exists | bool)
+      - not (datev_skr04_snapshot_directory_states.results[2].stat.islnk | default(false) | bool)
+    fail_msg: >-
+      A backup path became a symlink/non-directory, has unexpected ownership or
+      mode, or the generated run directory already exists. The workflow will not
+      reuse or overwrite backup evidence. The backup root must remain root-owned;
+      postgres receives traverse-only access and can never create/replace paths.
+
+- name: Create the protected kivitendo backup parent when absent
+  ansible.builtin.file:
+    path: /var/backups/kivitendo
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not (datev_skr04_snapshot_directory_states.results[0].stat.exists | bool)
+
+- name: Create the protected DATEV migration backup root when absent
+  ansible.builtin.file:
+    path: "{{ datev_skr04_backup_root }}"
+    state: directory
+    owner: root
+    group: postgres
+    mode: "0710"
+  when: not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool)
+
+- name: Create the unique root-owned migration backup directory
+  ansible.builtin.file:
+    path: "{{ datev_skr04_backup_directory }}"
+    state: directory
+    owner: root
+    group: postgres
+    mode: "0710"
+
+- name: Pre-create only the two PostgreSQL dump files for postgres
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: postgres
+    group: postgres
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  loop:
+    - "{{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+    - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+
+- name: Verify postgres can write only the pre-created dump files, not their directory
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ datev_skr04_backup_directory }}"
+    - "{{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+    - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+  register: datev_skr04_precreated_dump_states
+
+- name: Assert the evidence directory cannot be rewritten by postgres
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_precreated_dump_states.results[0].stat.isdir | bool
+      - not (datev_skr04_precreated_dump_states.results[0].stat.islnk | default(false) | bool)
+      - datev_skr04_precreated_dump_states.results[0].stat.pw_name == 'root'
+      - datev_skr04_precreated_dump_states.results[0].stat.gr_name == 'postgres'
+      - datev_skr04_precreated_dump_states.results[0].stat.mode == '0710'
+      - datev_skr04_precreated_dump_states.results[1].stat.isreg | bool
+      - not (datev_skr04_precreated_dump_states.results[1].stat.islnk | default(false) | bool)
+      - datev_skr04_precreated_dump_states.results[1].stat.pw_name == 'postgres'
+      - datev_skr04_precreated_dump_states.results[1].stat.mode == '0600'
+      - datev_skr04_precreated_dump_states.results[2].stat.isreg | bool
+      - not (datev_skr04_precreated_dump_states.results[2].stat.islnk | default(false) | bool)
+      - datev_skr04_precreated_dump_states.results[2].stat.pw_name == 'postgres'
+      - datev_skr04_precreated_dump_states.results[2].stat.mode == '0600'
+    fail_msg: >-
+      Backup evidence paths are not fail-closed. The run directory must be
+      root-owned and non-writable by postgres; only the two already-created dump
+      files may temporarily be writable by postgres.
+
+- name: Read current service state before the consistent snapshot
+  ansible.builtin.service_facts:
+
+- name: Remember which write-capable services were running
+  ansible.builtin.set_fact:
+    datev_skr04_apache_was_running: >-
+      {{ ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running' }}
+    datev_skr04_fcgi_service_name: >-
+      {{ kivitendo_fcgi_service_name | default('kivitendo-fcgi') }}
+    datev_skr04_fcgi_was_running: >-
+      {{ ansible_facts.services.get((kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service', {}).get('state', '') == 'running' }}
+    datev_skr04_task_service_name: >-
+      {{ kivitendo_task_server_service_name | default('kivitendo-task-server') }}
+    datev_skr04_task_was_running: >-
+      {{ ansible_facts.services.get((kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service', {}).get('state', '') == 'running' }}
+
+- name: Create source and installation snapshots while writes are quiesced
+  block:
+    - name: Stop Apache during the source snapshot
+      ansible.builtin.service:
+        name: apache2
+        state: stopped
+      when:
+        - datev_skr04_quiesce_source | bool
+        - datev_skr04_apache_was_running | bool
+
+    - name: Stop the dedicated kivitendo FCGI service during the source snapshot
+      ansible.builtin.service:
+        name: "{{ datev_skr04_fcgi_service_name }}"
+        state: stopped
+      when:
+        - datev_skr04_quiesce_source | bool
+        - datev_skr04_fcgi_was_running | bool
+
+    - name: Stop the kivitendo task server during the source snapshot
+      ansible.builtin.service:
+        name: "{{ datev_skr04_task_service_name }}"
+        state: stopped
+      when:
+        - datev_skr04_quiesce_source | bool
+        - datev_skr04_task_was_running | bool
+
+    - name: Dump the source kivitendo database in PostgreSQL custom format
+      become_user: postgres
+      ansible.builtin.command:
+        argv:
+          - pg_dump
+          - --host=/var/run/postgresql
+          - "--port={{ datev_skr04_db_port }}"
+          - --format=custom
+          - --compress=9
+          - --no-owner
+          - --no-privileges
+          - "--file={{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+          - "{{ datev_skr04_source_db }}"
+      changed_when: true
+
+    - name: Dump the kivitendo authentication database
+      become_user: postgres
+      ansible.builtin.command:
+        argv:
+          - pg_dump
+          - --host=/var/run/postgresql
+          - "--port={{ datev_skr04_db_port }}"
+          - --format=custom
+          - --compress=9
+          - --no-owner
+          - --no-privileges
+          - "--file={{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+          - "{{ datev_skr04_auth_db }}"
+      changed_when: true
+
+    - name: Revoke postgres write ownership from completed database dumps
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - "{{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+        - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+
+    - name: Capture the installed kivitendo Git revision
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ kivitendo_install_dir }}"
+          - rev-parse
+          - HEAD
+      register: datev_skr04_git_revision
+      changed_when: false
+
+    - name: Capture the complete installed kivitendo working-tree status
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ kivitendo_install_dir }}"
+          - status
+          - --porcelain=v1
+          - --untracked-files=all
+      register: datev_skr04_git_status
+      changed_when: false
+
+    - name: Capture all tracked local kivitendo changes as a binary-safe patch
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ kivitendo_install_dir }}"
+          - diff
+          - --binary
+          - --no-ext-diff
+          - HEAD
+      register: datev_skr04_git_diff
+      changed_when: false
+
+    - name: Save the installed revision and working-tree status as root-owned evidence
+      ansible.builtin.copy:
+        dest: "{{ datev_skr04_backup_directory }}/kivitendo-git-state.txt"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          revision: {{ datev_skr04_git_revision.stdout }}
+          status:
+          {{ datev_skr04_git_status.stdout | indent(2, true) }}
+
+    - name: Save all tracked local kivitendo changes as root-owned evidence
+      ansible.builtin.copy:
+        dest: "{{ datev_skr04_backup_directory }}/kivitendo-local-changes.patch"
+        owner: root
+        group: root
+        mode: "0600"
+        content: "{{ datev_skr04_git_diff.stdout }}\n"
+
+    - name: Archive the complete installed kivitendo tree except Git object storage
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/tar
+          - --create
+          - --gzip
+          - --numeric-owner
+          - "--file={{ datev_skr04_backup_directory }}/kivitendo-installation.tar.gz"
+          - --directory
+          - "{{ kivitendo_install_dir | dirname }}"
+          - --exclude
+          - "{{ kivitendo_install_dir | basename }}/.git"
+          - "{{ kivitendo_install_dir | basename }}"
+      register: datev_skr04_installation_archive
+      changed_when: true
+      when: datev_skr04_backup_documents | bool
+
+    - name: Archive the configured external kivitendo document store
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/tar
+          - --create
+          - --gzip
+          - --numeric-owner
+          - "--file={{ datev_skr04_backup_directory }}/kivitendo-documents.tar.gz"
+          - --directory
+          - /
+          - "{{ kivitendo_document_dir | regex_replace('^/', '') }}"
+      register: datev_skr04_documents_archive
+      changed_when: true
+      when: datev_skr04_backup_documents | bool
+
+    - name: Protect the root-written local-file snapshot archives
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - "{{ datev_skr04_backup_directory }}/kivitendo-installation.tar.gz"
+        - "{{ datev_skr04_backup_directory }}/kivitendo-documents.tar.gz"
+      when: datev_skr04_backup_documents | bool
+
+    - name: Re-read the source accounting state inside the quiesced window
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: "{{ datev_skr04_source_db }}"
+        query: "{{ datev_skr04_source_fingerprint_query }}"
+      register: datev_skr04_snapshot_fingerprint_raw
+      changed_when: false
+
+    - name: Calculate the snapshot-bound source fingerprint
+      ansible.builtin.set_fact:
+        datev_skr04_snapshot_fingerprint: >-
+          {{ datev_skr04_snapshot_fingerprint_raw.query_result[0]
+             | to_json
+             | hash('sha256') }}
+
+    - name: Assert the source did not change between preflight and snapshot
+      ansible.builtin.assert:
+        that:
+          - datev_skr04_snapshot_fingerprint == datev_skr04_source_fingerprint_actual
+        fail_msg: >-
+          The source changed between preflight and the quiesced snapshot.
+          Nothing will be created from an ambiguous source state.
+
+  always:
+    - name: Attempt FCGI service restoration if it was running before snapshot
+      ansible.builtin.service:
+        name: "{{ datev_skr04_fcgi_service_name }}"
+        state: started
+      register: datev_skr04_fcgi_restore_attempt
+      failed_when: false
+      when:
+        - datev_skr04_quiesce_source | bool
+        - datev_skr04_fcgi_was_running | bool
+
+    - name: Attempt task-server restoration if it was running before snapshot
+      ansible.builtin.service:
+        name: "{{ datev_skr04_task_service_name }}"
+        state: started
+      register: datev_skr04_task_restore_attempt
+      failed_when: false
+      when:
+        - datev_skr04_quiesce_source | bool
+        - datev_skr04_task_was_running | bool
+
+    - name: Attempt Apache restoration if it was running before snapshot
+      ansible.builtin.service:
+        name: apache2
+        state: started
+      register: datev_skr04_apache_restore_attempt
+      failed_when: false
+      when:
+        - datev_skr04_quiesce_source | bool
+        - datev_skr04_apache_was_running | bool
+
+    - name: Re-read service state after every restoration attempt
+      ansible.builtin.service_facts:
+
+    - name: Fail only after every previously running service had a restore attempt
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (datev_skr04_fcgi_was_running | bool) or
+            (
+              not (datev_skr04_fcgi_restore_attempt.failed | default(false) | bool) and
+              ansible_facts.services.get(datev_skr04_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+            )
+          - >-
+            not (datev_skr04_task_was_running | bool) or
+            (
+              not (datev_skr04_task_restore_attempt.failed | default(false) | bool) and
+              ansible_facts.services.get(datev_skr04_task_service_name + '.service', {}).get('state', '') == 'running'
+            )
+          - >-
+            not (datev_skr04_apache_was_running | bool) or
+            (
+              not (datev_skr04_apache_restore_attempt.failed | default(false) | bool) and
+              ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
+            )
+        fail_msg: >-
+          One or more services that were running before the snapshot could not
+          be restored. All FCGI, task-server and Apache restore attempts have
+          completed; the migration stops here so service recovery can be handled
+          explicitly before any target operation.
+
+- name: Calculate SHA-256 checksums for mandatory database backups
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop:
+    - "{{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+    - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+  register: datev_skr04_backup_checksums
+
+- name: Assert both database backups are present and non-empty root-owned files
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backup_checksums.results | map(attribute='stat.exists') | min
+      - datev_skr04_backup_checksums.results | map(attribute='stat.size') | min | int > 0
+      - datev_skr04_backup_checksums.results[0].stat.pw_name == 'root'
+      - datev_skr04_backup_checksums.results[1].stat.pw_name == 'root'
+      - datev_skr04_backup_checksums.results[0].stat.mode == '0600'
+      - datev_skr04_backup_checksums.results[1].stat.mode == '0600'
+    fail_msg: >-
+      The mandatory source/auth snapshots are incomplete or remained writable by
+      postgres. Target creation is blocked before any database or auth client is added.
+
+- name: Calculate SHA-256 checksums for mandatory local-file snapshots
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop:
+    - "{{ datev_skr04_backup_directory }}/kivitendo-installation.tar.gz"
+    - "{{ datev_skr04_backup_directory }}/kivitendo-documents.tar.gz"
+  register: datev_skr04_local_backup_checksums
+  when: datev_skr04_backup_documents | bool
+
+- name: Assert both local-file snapshots are present and non-empty root-owned files
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_local_backup_checksums.results | map(attribute='stat.exists') | min
+      - datev_skr04_local_backup_checksums.results | map(attribute='stat.size') | min | int > 0
+      - datev_skr04_local_backup_checksums.results[0].stat.pw_name == 'root'
+      - datev_skr04_local_backup_checksums.results[1].stat.pw_name == 'root'
+      - datev_skr04_local_backup_checksums.results[0].stat.mode == '0600'
+      - datev_skr04_local_backup_checksums.results[1].stat.mode == '0600'
+    fail_msg: >-
+      The installed kivitendo tree or external document snapshot is incomplete
+      or not root-protected. Target creation is blocked before any database or
+      auth client is added.
+  when: datev_skr04_backup_documents | bool
+
+- name: Write the root-owned protected snapshot manifest
+  ansible.builtin.copy:
+    dest: "{{ datev_skr04_backup_directory }}/manifest.yml"
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      version: 2
+      run_id: "{{ datev_skr04_run_id }}"
+      created_at: "{{ ansible_facts.date_time.iso8601 }}"
+      source_database: "{{ datev_skr04_source_db }}"
+      target_database: "{{ datev_skr04_target_db }}"
+      source_client_id: {{ datev_skr04_source_client_id }}
+      source_fingerprint: "{{ datev_skr04_snapshot_fingerprint }}"
+      source_dump_sha256: "{{ datev_skr04_backup_checksums.results[0].stat.checksum }}"
+      auth_dump_sha256: "{{ datev_skr04_backup_checksums.results[1].stat.checksum }}"
+      local_files_snapshotted: {{ datev_skr04_backup_documents | bool | lower }}
+      kivitendo_installation_archive_sha256: "{{ datev_skr04_local_backup_checksums.results[0].stat.checksum if datev_skr04_backup_documents | bool else 'not-requested' }}"
+      kivitendo_documents_archive_sha256: "{{ datev_skr04_local_backup_checksums.results[1].stat.checksum if datev_skr04_backup_documents | bool else 'not-requested' }}"
+      kivitendo_revision: "{{ datev_skr04_git_revision.stdout }}"
+      source_modified_by_workflow: false

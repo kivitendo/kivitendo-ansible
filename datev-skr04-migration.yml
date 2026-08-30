@@ -1,0 +1,207 @@
+---
+- name: Prepare an isolated kivitendo SKR04 client for DATEV
+  hosts: all
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+
+  # Perl reads these variables before a script BEGIN block. Clear ambient
+  # startup/search-path customization for every task in this reviewed play.
+  # PGOPTIONS pins every libpq/DBI session spawned by the native initializer to
+  # the kivitendo production schema instead of any role-level ambient search_path.
+  # The Git config-count overrides apply to every child Git process, including
+  # commands run against the installed kivitendo checkout. This prevents a
+  # mutable repository from executing fsmonitor/hooks/attributes configuration
+  # as root before its source-integrity assertions run.
+  environment:
+    PERL5OPT: ""
+    PERL5LIB: ""
+    PERLLIB: ""
+    PERL5DB: ""
+    PERL_LOCAL_LIB_ROOT: ""
+    PERL_MB_OPT: ""
+    PERL_MM_OPT: ""
+    PERL_USE_UNSAFE_INC: "0"
+    PGOPTIONS: "-c search_path=public,pg_catalog"
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_COUNT: "4"
+    GIT_CONFIG_KEY_0: core.hooksPath
+    GIT_CONFIG_VALUE_0: /dev/null
+    GIT_CONFIG_KEY_1: core.fsmonitor
+    GIT_CONFIG_VALUE_1: "false"
+    GIT_CONFIG_KEY_2: core.attributesFile
+    GIT_CONFIG_VALUE_2: /dev/null
+    GIT_CONFIG_KEY_3: core.sparseCheckout
+    GIT_CONFIG_VALUE_3: "false"
+    GIT_NO_REPLACE_OBJECTS: "1"
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_PAGER: cat
+
+  vars_files:
+    - vars.yml
+    - datev-skr04-defaults.yml
+    - [datev-skr04.local.yml, datev-skr04.local.example.yml]
+
+  tasks:
+    - name: Bind execution to the explicitly reviewed orchestration checkout
+      ansible.builtin.include_tasks: tasks/datev_skr04/orchestration_checkout_contract.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Bind the live filesystem document store to mandatory recovery evidence
+      ansible.builtin.include_tasks: tasks/datev_skr04/document_store_contract.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Bind Unix-socket and TCP operations to one PostgreSQL cluster
+      ansible.builtin.include_tasks: tasks/datev_skr04/postgresql_cluster_contract.yml
+      vars:
+        datev_skr04_cluster_contract_phase: preflight
+      tags:
+        - always
+        - preflight
+
+    - name: Validate target precision before any snapshot or target write
+      ansible.builtin.include_tasks: tasks/datev_skr04/precision_contract.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Run the read-only and fail-closed preflight
+      ansible.builtin.include_tasks: tasks/datev_skr04/preflight.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Revalidate source invariants against the explicit public schema
+      ansible.builtin.include_tasks: tasks/datev_skr04/public_source_schema_contract.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Enforce strict installation, defaults and PostgreSQL-role invariants
+      ansible.builtin.include_tasks: tasks/datev_skr04/strict_environment.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Directly bind every privileged installed kivitendo Perl and SQL input
+      ansible.builtin.include_tasks: tasks/datev_skr04/kivitendo_privileged_source_contract.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Enforce the isolated PostgreSQL application-role membership contract
+      ansible.builtin.include_tasks: tasks/datev_skr04/application_role_contract.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Bind the protected source authentication state
+      ansible.builtin.include_tasks: tasks/datev_skr04/auth_baseline.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Require DATEV support for every prepared target before snapshots
+      ansible.builtin.assert:
+        that:
+          - datev_skr04_feature_datev | bool
+        fail_msg: >-
+          The parallel target is explicitly a DATEV target. feature_datev may
+          not be disabled; refusing a configuration that would necessarily fail
+          after target creation.
+      tags:
+        - always
+        - preflight
+
+    - name: Create and verify the parallel SKR04 client
+      when:
+        - datev_skr04_mode == 'apply'
+        - (datev_skr04_cluster_contract | default({})).get('verified', false) | bool
+        - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'preflight'
+        - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_bound_system_identifier
+      block:
+        - name: Revalidate the bound PostgreSQL cluster before snapshots
+          ansible.builtin.include_tasks: tasks/datev_skr04/postgresql_cluster_contract.yml
+          vars:
+            datev_skr04_cluster_contract_phase: pre_snapshot
+
+        - name: Derive and reserve the exact native staging namespace before interruption
+          ansible.builtin.include_tasks: tasks/datev_skr04/derive_staging_identity.yml
+
+        - name: Capture mandatory source, auth, installation and document snapshots
+          ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
+
+        - name: Finalize and validate the actual snapshot evidence timestamp
+          ansible.builtin.include_tasks: tasks/datev_skr04/finalize_snapshot_manifest.yml
+
+        - name: Validate mandatory snapshot evidence before any target operation
+          ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_evidence_gate.yml
+          tags:
+            - always
+
+        - name: Run the frozen target-write window only after the snapshot gate
+          ansible.builtin.include_tasks: tasks/datev_skr04/frozen_target_operations.yml
+          when:
+            - (datev_skr04_snapshot_complete | default({})).get('run_id', '') == datev_skr04_run_id
+            - (datev_skr04_snapshot_complete | default({})).get('source_fingerprint', '') == datev_skr04_expected_source_fingerprint
+            - (datev_skr04_snapshot_complete | default({})).get('backup_directory', '') == datev_skr04_snapshot_gate_directory
+            - (datev_skr04_snapshot_complete | default({})).get('postgresql_system_identifier', '') == datev_skr04_bound_system_identifier
+
+      rescue:
+        - name: Report the preserved failed apply state
+          ansible.builtin.debug:
+            msg:
+              - "Parallel SKR04 preparation failed."
+              - "Backup directory: {{ datev_skr04_backup_directory | default('not-created') }}"
+              - >-
+                No automatic deletion or rollback was attempted. Any partial
+                target or staging database, authentication row or sidecar
+                contract remains quarantined for evidence-preserving inspection.
+
+        - name: Terminate the failed migration without destructive cleanup
+          ansible.builtin.fail:
+            msg: >-
+              Parallel SKR04 preparation failed and the partial state was
+              preserved. Do not rerun apply or delete target resources until the
+              database marker, authentication state, sidecar contract and backup
+              evidence have been inspected together.
+
+    - name: Assert that apply mode reached its guarded stopping point
+      ansible.builtin.assert:
+        that:
+          - datev_skr04_parallel_client_ready | default(false) | bool
+          - datev_skr04_final_evidence_ready | default(false) | bool
+          - (datev_skr04_target_defaults_verification | default({})).get('verified', false) | bool
+          - (datev_skr04_target_defaults_verification | default({})).get('run_id', '') == datev_skr04_run_id
+          - (datev_skr04_target_defaults_verification | default({})).get('target_database', '') == datev_skr04_target_db
+          - (datev_skr04_pre_target_auth_verified | default({})).get('verified', false) | bool
+          - (datev_skr04_pre_target_auth_verified | default({})).get('source_client_id', 0) | int == datev_skr04_source_client_id | int
+          - (datev_skr04_pre_target_auth_verified | default({})).get('target_database', '') == datev_skr04_target_db
+          - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'pre_create'
+          - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_bound_system_identifier
+          - datev_skr04_application_role_contract_state.query_result | length == 1
+          - datev_skr04_application_role_contract_state.query_result[0].members_that_can_assume_application | int == 0
+          - not (datev_skr04_application_role_contract_state.query_result[0].role_search_path_overridden | bool)
+          - datev_skr04_application_role_contract_state.query_result[0].database_search_path_overrides | int == 0
+        fail_msg: >-
+          Apply mode did not complete target, complete-default, frozen-auth,
+          cluster, role, schema-path and evidence verification. No access,
+          master-data migration or production cutover is allowed.
+      when: datev_skr04_mode == 'apply'
+
+    - name: Confirm that preflight made no changes
+      ansible.builtin.debug:
+        msg: >-
+          Read-only preflight complete. The reviewed orchestration checkout,
+          document store, installed privileged source tree, PostgreSQL role graph,
+          schema path, numeric precision, source closing boundary and socket/TCP
+          cluster binding were verified. No target or staging database, auth
+          client, posting, customer, invoice, default-client or task-server change
+          was made.
+      when: datev_skr04_mode == 'preflight'

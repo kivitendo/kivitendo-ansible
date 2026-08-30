@@ -1,0 +1,62 @@
+---
+- name: Inspect complete application-role capabilities and membership graph
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: |
+      SELECT
+        r.rolcanlogin,
+        r.rolcreatedb,
+        r.rolsuper,
+        r.rolcreaterole,
+        r.rolreplication,
+        r.rolbypassrls,
+        EXISTS (
+          SELECT 1
+          FROM unnest(COALESCE(r.rolconfig, ARRAY[]::text[])) AS setting
+          WHERE lower(setting) LIKE 'search_path=%'
+        ) AS role_search_path_overridden,
+        (
+          SELECT count(*)::bigint
+          FROM pg_db_role_setting s
+          WHERE s.setrole = r.oid
+            AND EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(s.setconfig, ARRAY[]::text[])) AS setting
+              WHERE lower(setting) LIKE 'search_path=%'
+            )
+        ) AS database_search_path_overrides,
+        (SELECT count(*)::bigint
+           FROM pg_auth_members m
+          WHERE m.member = r.oid) AS roles_granted_to_application,
+        (SELECT count(*)::bigint
+           FROM pg_auth_members m
+          WHERE m.roleid = r.oid) AS members_that_can_assume_application
+      FROM pg_roles r
+      WHERE r.rolname = %(db_user)s;
+    named_args:
+      db_user: "{{ datev_skr04_db_user }}"
+  register: datev_skr04_application_role_contract_state
+  changed_when: false
+
+- name: Enforce isolated LOGIN and CREATEDB-only application role
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_application_role_contract_state.query_result | length == 1
+      - datev_skr04_application_role_contract_state.query_result[0].rolcanlogin | bool
+      - datev_skr04_application_role_contract_state.query_result[0].rolcreatedb | bool
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolsuper | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolcreaterole | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolreplication | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolbypassrls | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].role_search_path_overridden | bool)
+      - datev_skr04_application_role_contract_state.query_result[0].database_search_path_overrides | int == 0
+      - datev_skr04_application_role_contract_state.query_result[0].roles_granted_to_application | int == 0
+      - datev_skr04_application_role_contract_state.query_result[0].members_that_can_assume_application | int == 0
+    fail_msg: >-
+      The persistent kivitendo PostgreSQL role must have LOGIN and CREATEDB only,
+      inherit no other role, have no role/login that can SET ROLE to it and carry
+      no role/database search_path override. Native target initialization is
+      explicitly pinned to public,pg_catalog and refuses an ambient schema path.

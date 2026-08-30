@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPOSITORY_ROOT="$(cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 VENV_DIR="${REPOSITORY_ROOT}/.venv"
+COLLECTIONS_DIR="${ANSIBLE_COLLECTIONS_PATH:-${REPOSITORY_ROOT}/.ansible/collections}"
 
 log() {
   printf '[bootstrap] %s\n' "$*"
@@ -24,6 +25,8 @@ DEBIAN_MAJOR_VERSION="${VERSION_ID%%.*}"
 
 [[ -f "${REPOSITORY_ROOT}/requirements.txt" ]] || fail "requirements.txt not found in ${REPOSITORY_ROOT}."
 [[ -f "${REPOSITORY_ROOT}/requirements.yml" ]] || fail "requirements.yml not found in ${REPOSITORY_ROOT}."
+[[ "$COLLECTIONS_DIR" = /* ]] || fail "ANSIBLE_COLLECTIONS_PATH must resolve to one absolute path."
+[[ "$COLLECTIONS_DIR" != *:* ]] || fail "ANSIBLE_COLLECTIONS_PATH must contain exactly one collection root."
 
 SUDO=()
 if (( EUID != 0 )); then
@@ -53,17 +56,28 @@ fi
 log "Installing pinned ansible-core dependency range from requirements.txt."
 "${VENV_DIR}/bin/python" -m pip install --disable-pip-version-check -r "${REPOSITORY_ROOT}/requirements.txt"
 
-log "Installing pinned Ansible collections from requirements.yml."
-"${VENV_DIR}/bin/ansible-galaxy" collection install -r "${REPOSITORY_ROOT}/requirements.yml"
+# Never allow a mutable user-global ~/.ansible/collections tree to satisfy the
+# reviewed controller dependencies. The launcher supplies a fresh worktree-local
+# ANSIBLE_COLLECTIONS_PATH; normal repository use defaults to the same local
+# repository namespace. --force guarantees the exact requirements are written
+# into this isolated destination even if it was populated by a prior local run.
+install -d -m 0700 "$COLLECTIONS_DIR"
+log "Installing pinned Ansible collections into isolated path ${COLLECTIONS_DIR}."
+ANSIBLE_COLLECTIONS_PATH="$COLLECTIONS_DIR" \
+  "${VENV_DIR}/bin/ansible-galaxy" collection install \
+    --force \
+    -p "$COLLECTIONS_DIR" \
+    -r "${REPOSITORY_ROOT}/requirements.yml"
 
 log "Controller bootstrap completed successfully."
-"${VENV_DIR}/bin/ansible-playbook" --version
+ANSIBLE_COLLECTIONS_PATH="$COLLECTIONS_DIR" "${VENV_DIR}/bin/ansible-playbook" --version
 
 cat <<EOF
 
 Next steps:
   cd '${REPOSITORY_ROOT}'
   source .venv/bin/activate
+  export ANSIBLE_COLLECTIONS_PATH='${COLLECTIONS_DIR}'
   bash scripts/generate-secrets.sh --encrypt-with-ansible-vault
   ansible-playbook -i inventory --ask-become-pass --ask-vault-pass -e @secrets.yml main.yml
 

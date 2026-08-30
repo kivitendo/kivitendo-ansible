@@ -1,0 +1,69 @@
+---
+- name: Freeze source writes and execute all target-only operations
+  block:
+    - name: Quiesce write-capable kivitendo services for the target-write window
+      ansible.builtin.include_tasks: target_write_window_quiesce.yml
+
+    - name: Revalidate the approved public-schema closing boundary while frozen
+      ansible.builtin.include_tasks: public_source_schema_contract.yml
+
+    - name: Rebind the full source fingerprint while frozen
+      ansible.builtin.include_tasks: pre_target_source_gate.yml
+
+    - name: Revalidate source authentication and unused target identity while frozen
+      ansible.builtin.include_tasks: pre_target_auth_gate.yml
+
+    - name: Revalidate the reviewed orchestration checkout in the frozen window
+      ansible.builtin.include_tasks: orchestration_checkout_contract.yml
+
+    - name: Revalidate the PostgreSQL cluster in the frozen window
+      ansible.builtin.include_tasks: postgresql_cluster_contract.yml
+      vars:
+        datev_skr04_cluster_contract_phase: pre_create
+
+    - name: Assert the frozen target window is bound to the snapshotted cluster
+      ansible.builtin.assert:
+        that:
+          - (datev_skr04_cluster_contract | default({})).get('verified', false) | bool
+          - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'pre_create'
+          - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_snapshot_complete.postgresql_system_identifier
+        fail_msg: >-
+          The PostgreSQL cluster changed after snapshotting. No target write will
+          occur while the source and snapshot cluster identities disagree.
+
+    - name: Directly bind every privileged installed kivitendo Perl and SQL input
+      ansible.builtin.include_tasks: kivitendo_privileged_source_contract.yml
+
+    - name: Revalidate all live creation inputs after snapshotting
+      ansible.builtin.include_tasks: pre_create_integrity.yml
+
+    - name: Revalidate the application-role membership graph before elevation
+      ansible.builtin.include_tasks: application_role_contract.yml
+
+    - name: Initialize the isolated SKR04 database with guaranteed privilege cleanup
+      block:
+        - name: Run the native isolated SKR04 initializer
+          ansible.builtin.include_tasks: create.yml
+      always:
+        - name: Complete evidence-preserving temporary-elevation cleanup
+          ansible.builtin.include_tasks: post_create_ephemeral_cleanup.yml
+          when: datev_skr04_ephemeral_role is defined
+
+    - name: Verify every configured target default
+      ansible.builtin.include_tasks: verify_target_defaults.yml
+
+    - name: Revalidate the reviewed orchestration checkout before auth registration
+      ansible.builtin.include_tasks: orchestration_checkout_contract.yml
+
+    - name: Register a quarantined non-default client without access mappings
+      ansible.builtin.include_tasks: register.yml
+
+    - name: Prove target correctness, quarantine and source immutability while frozen
+      ansible.builtin.include_tasks: verify.yml
+
+    - name: Revalidate the application-role membership graph after target operations
+      ansible.builtin.include_tasks: application_role_contract.yml
+
+  always:
+    - name: Restore every source service after the target-write window
+      ansible.builtin.include_tasks: target_write_window_restore.yml

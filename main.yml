@@ -339,6 +339,15 @@
       no_log: true
       notify: Restart Apache
 
+    - name: Create protected kivitendo data parent directory
+      ansible.builtin.file:
+        path: "{{ kivitendo_document_dir | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0711'
+      when: (kivitendo_document_dir | dirname) == '/var/lib/kivitendo'
+
     - name: Create external kivitendo document directory
       ansible.builtin.file:
         path: "{{ kivitendo_document_dir }}"

@@ -10,6 +10,7 @@ import yaml
 from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[1]
+GENERATED_YAML_ROOTS = {".ansible", ".venv"}
 
 
 def read(relative: str) -> str:
@@ -17,7 +18,15 @@ def read(relative: str) -> str:
 
 
 def main() -> None:
+    # Validate repository-owned YAML only. The controller bootstrap deliberately
+    # installs reviewed Python/Ansible dependencies below .venv and .ansible;
+    # those generated dependency trees can contain Ansible-native YAML tags such
+    # as !unsafe and are validated by their own upstream tooling, not by this
+    # repository's plain-PyYAML source check.
     for path in sorted(ROOT.rglob("*.yml")):
+        relative = path.relative_to(ROOT)
+        if relative.parts and relative.parts[0] in GENERATED_YAML_ROOTS:
+            continue
         yaml.safe_load(path.read_text(encoding="utf-8"))
 
     jinja = Environment()

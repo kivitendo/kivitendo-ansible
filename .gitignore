@@ -4,3 +4,5 @@ __pycache__/
 secrets.yml
 vault-password.txt
 *.vault-password
+datev-skr04.local.yml
+datev-migration.local.yml
