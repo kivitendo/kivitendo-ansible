@@ -1,0 +1,32 @@
+---
+- name: Re-read configured web frontend state before quiescing
+  ansible.builtin.service_facts:
+
+- name: Require the configured web frontend to be running before quiescing
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_web_service_unit in ansible_facts.services
+      - ansible_facts.services[datev_skr04_web_service_unit].state == 'running'
+    fail_msg: >-
+      The configured kivitendo web frontend is not running at the start of a
+      protected quiesce window. Refusing to infer service state or continue.
+
+- name: Remember that the configured web frontend must be restored
+  ansible.builtin.set_fact:
+    datev_skr04_web_service_was_running: true
+
+- name: Stop the configured kivitendo web frontend
+  ansible.builtin.service:
+    name: "{{ datev_skr04_web_service_name }}"
+    state: stopped
+
+- name: Confirm the configured web frontend is stopped
+  ansible.builtin.service_facts:
+
+- name: Require the configured web frontend to remain quiesced
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') != 'running'
+    fail_msg: >-
+      The configured kivitendo web frontend could not be quiesced. No protected
+      snapshot or target-write operation is allowed while it can accept writes.
