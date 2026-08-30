@@ -12,6 +12,12 @@ Ansible input: the operator invokes a launcher directly from the reviewed Git
 object. That launcher creates a detached root-controlled worktree at the exact
 reviewed SHA, bootstraps Ansible inside that worktree and runs the playbook there.
 
+The launcher itself must start through an explicit `env -i` boundary. This is
+necessary because a non-interactive Bash processes `BASH_ENV` before the first
+line of a script and utilities such as GNU tar honor environment options. The
+reviewed command below isolates both the `git show` producer and the root Bash
+consumer from the invoking shell.
+
 This external trust anchor exists because Ansible must parse a playbook before
 any task inside that playbook can audit itself.
 
@@ -26,14 +32,20 @@ The workflow:
 - never changes the source `closedto` itself;
 - requires DATEV support enabled for the new target;
 - binds every protected source query explicitly to PostgreSQL `public` schema;
+- pins native/target PostgreSQL sessions to `public,pg_catalog` and rejects
+  persistent application-role `search_path` overrides;
 - fingerprints accounting, account-plan, master-data, order, delivery, invoice
   and bank-transaction state;
 - requires the exact same fingerprint at preflight, quiesced snapshot, frozen
   pre-target gate and final verification;
 - executes only from an explicit Codex-reviewed 40-character orchestration SHA;
+- starts the root launcher and executable child processes from explicit
+  environment allowlists;
 - starts Ansible from a detached worktree materialized from that Git object;
+- serializes every preflight/apply with one host-wide exclusive lock;
 - repeatedly compares every tracked migration runtime file byte-for-byte with
-  reviewed `HEAD`, independently of Git index flags;
+  reviewed `HEAD`, independently of Git index flags and with executable Git
+  configuration disabled;
 - directly compares every tracked installed kivitendo `.pm`, `.pl` and native
   `sql/` input byte-for-byte with pinned kivitendo `HEAD` and rejects untracked
   or ignored privileged inputs;
@@ -44,6 +56,8 @@ The workflow:
   and isolated in both membership directions;
 - makes source/auth database dumps plus complete installation/document archives
   mandatory and SHA-256 verified before target creation;
+- rejects filesystem backup archives containing symlink or hardlink members, so
+  link-only references cannot stand in for uncaptured recovery data;
 - stops Apache, kivitendo FCGI and task server for the consistent snapshot;
 - stops those services again for the final pre-target source gate and keeps them
   stopped throughout **all** target writes and final source verification;
@@ -56,6 +70,7 @@ The workflow:
 - registers the target as non-default, without user/group mappings and without a
   task-server identity;
 - creates no target WebDAV link or document storage in this stage;
+- treats a failed Ansible run **or failed audit-log write** as launcher failure;
 - never force-drops databases and never performs destructive automatic rollback.
 
 ## Failure model
@@ -133,14 +148,14 @@ commit supplied by the release/migration gate:
 
 ```bash
 EXPECTED_SHA='<exact-reviewed-40-character-sha>'
-git cat-file -e "${EXPECTED_SHA}^{commit}"
+/usr/bin/git cat-file -e "${EXPECTED_SHA}^{commit}"
 ```
 
 Create the local variable file from that exact Git object, not from a mutable
 working-copy example:
 
 ```bash
-git show "${EXPECTED_SHA}:datev-skr04.local.example.yml" > datev-skr04.local.yml
+/usr/bin/git show "${EXPECTED_SHA}:datev-skr04.local.example.yml" > datev-skr04.local.yml
 chmod 0600 datev-skr04.local.yml
 ```
 
@@ -157,27 +172,50 @@ Keep the fingerprint and apply confirmation empty. Do not use `-e` or
 
 ## 3. Run the final read-only preflight through the Git-object trust anchor
 
-Do **not** invoke `ansible-playbook` directly from `/root/kivitendo-datev`.
-Execute the launcher itself from the reviewed Git object:
+Do **not** invoke `ansible-playbook` directly from `/root/kivitendo-datev`, and
+do not pipe the launcher into an ambient root `bash`. Execute both sides of the
+trust-anchor pipeline with explicit empty environments:
 
 ```bash
 cd /root/kivitendo-datev
 
 EXPECTED_SHA='<exact-reviewed-40-character-sha>'
+SOURCE_REPO=/root/kivitendo-datev
+INVENTORY_FILE=/root/kivitendo-datev/inventory.local
+LOCAL_VARS_FILE=/root/kivitendo-datev/datev-skr04.local.yml
 
-git show "${EXPECTED_SHA}:scripts/run-datev-skr04-reviewed.sh" \
-  | bash -s -- \
+/usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  HOME=/root \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  GIT_CONFIG_NOSYSTEM=1 \
+  /usr/bin/git \
+    -c core.hooksPath=/dev/null \
+    -c core.fsmonitor=false \
+    -c core.attributesFile=/dev/null \
+    -C "$SOURCE_REPO" \
+    show "$EXPECTED_SHA:scripts/run-datev-skr04-reviewed.sh" \
+| /usr/bin/env -i \
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/root \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    KIVITENDO_DATEV_CLEAN_ENV=1 \
+    /bin/bash --noprofile --norc -s -- \
       "$EXPECTED_SHA" \
-      /root/kivitendo-datev \
-      /root/kivitendo-datev/inventory.local \
-      /root/kivitendo-datev/datev-skr04.local.yml
+      "$SOURCE_REPO" \
+      "$INVENTORY_FILE" \
+      "$LOCAL_VARS_FILE"
 ```
 
-The launcher creates a detached root-controlled worktree below
+The launcher refuses to start without `KIVITENDO_DATEV_CLEAN_ENV=1` from this
+`env -i` boundary. It then creates a detached root-controlled worktree below
 `/root/kivitendo-datev-reviewed/`, copies only the two local operator inputs,
 bootstraps Ansible from reviewed requirements and executes the reviewed playbook.
 It preserves the reviewed worktree and writes the Ansible log back below
-`/root/kivitendo-datev/` for audit.
+`/root/kivitendo-datev/` for audit. A failed log writer makes the launcher fail
+even when Ansible itself returned zero.
 
 A successful preflight must finish with `changed=0`, `failed=0`,
 `unreachable=0` and print a 64-character source fingerprint. Any source or code
@@ -195,8 +233,8 @@ datev_skr04_apply_confirmation: CREATE_PARALLEL_SKR04_DATASET
 datev_skr04_expected_source_fingerprint: "<fingerprint-from-final-preflight>"
 ```
 
-Run the exact same `git show ... run-datev-skr04-reviewed.sh | bash ...` command
-again. Do not add `-e`, `--extra-vars`, `--skip-tags` or `--check`.
+Run the exact same clean-environment trust-anchor command from section 3 again.
+Do not add `-e`, `--extra-vars`, `--skip-tags` or `--check`.
 
 ## 5. Review evidence and quarantine
 
