@@ -1,20 +1,30 @@
 ---
-- name: Attempt snapshot-entry FCGI backend restoration
-  ansible.builtin.service:
-    name: "{{ datev_skr04_snapshot_fcgi_service_name }}"
-    state: started
-  register: datev_skr04_snapshot_fcgi_restore_attempt
-  failed_when: false
-  when:
-    - datev_skr04_quiesce_source | bool
-    - datev_skr04_snapshot_fcgi_was_running_at_entry | default(false) | bool
+- name: Bind authoritative snapshot backend restore contract
+  ansible.builtin.set_fact:
+    datev_skr04_snapshot_backend_restore_items: >-
+      {{
+        (
+          ([{'unit': datev_skr04_snapshot_fcgi_service_name + '.service',
+             'was_running': datev_skr04_snapshot_fcgi_was_running_at_entry | bool}]
+           if (datev_skr04_snapshot_fcgi_service_name + '.service') in (datev_skr04_snapshot_backend_units | default([]))
+           else []) +
+          ([{'unit': datev_skr04_snapshot_task_service_name + '.service',
+             'was_running': datev_skr04_snapshot_task_was_running_at_entry | bool}]
+           if (datev_skr04_snapshot_task_service_name + '.service') in (datev_skr04_snapshot_backend_units | default([]))
+           else [])
+        )
+      }}
 
-- name: Attempt snapshot-entry task-server restoration
-  ansible.builtin.service:
-    name: "{{ datev_skr04_snapshot_task_service_name }}"
-    state: started
-  register: datev_skr04_snapshot_task_restore_attempt
-  failed_when: false
-  when:
-    - datev_skr04_quiesce_source | bool
-    - datev_skr04_snapshot_task_was_running_at_entry | default(false) | bool
+- name: Remove backend runtime masks and restore only authoritative entry-running services
+  ansible.builtin.include_tasks: backend_runtime_restore.yml
+  vars:
+    datev_skr04_backend_units_to_mask: "{{ datev_skr04_snapshot_backend_units | default([]) }}"
+    datev_skr04_backend_restore_items: "{{ datev_skr04_snapshot_backend_restore_items }}"
+    datev_skr04_backend_context: snapshot
+
+- name: Preserve snapshot backend recovery result for the outer recovery gate
+  ansible.builtin.set_fact:
+    datev_skr04_snapshot_backend_restore_ready: >-
+      {{ datev_skr04_backend_restore_ready | default(false) | bool }}
+    datev_skr04_snapshot_backend_reseal_ok: >-
+      {{ datev_skr04_backend_reseal_ok | default(false) | bool }}
