@@ -3,12 +3,14 @@
 # Keep the real file outside version control and encrypt it with Ansible Vault
 # when it is retained beyond this controlled migration.
 #
-# First run: leave mode at preflight and expected_source_fingerprint empty.
-# Second run: copy the fingerprint printed by the final reviewed preflight,
-# switch to apply and set the exact apply confirmation token.
+# First run: pin the exact Codex-reviewed orchestration commit, leave mode at
+# preflight and expected_source_fingerprint empty. Second run: copy the
+# fingerprint printed by that exact preflight, switch to apply and set the
+# exact apply confirmation token.
 
 datev_skr04_mode: preflight
 datev_skr04_apply_confirmation: ""
+datev_skr04_expected_orchestration_commit: ""
 datev_skr04_expected_source_fingerprint: ""
 
 datev_skr04_source_db: replace-with-existing-skr03-database
