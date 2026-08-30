@@ -50,6 +50,6 @@
         ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
     fail_msg: >-
       The configured kivitendo web frontend must exist, be running and report a
-      recognized restartable systemd enablement state, while the other supported
-      frontend must not be running. masked, masked-runtime, not-found, bad, empty
-      or unknown results are rejected because restoration cannot be guaranteed.
+      recognized restartable systemd enablement state; the other supported frontend
+      must not be running. masked, masked-runtime, not-found, bad, empty or unknown
+      results are rejected because restoration cannot be guaranteed.
