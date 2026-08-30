@@ -43,6 +43,17 @@
   changed_when: false
   failed_when: false
 
+- name: Reject a newly masked selected frontend at the destructive boundary
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_web_enablement_before_mask.results | length >= 1
+      - (datev_skr04_web_enablement_before_mask.results[0].stdout | default('') | trim) not in ['masked', 'masked-runtime']
+    fail_msg: >-
+      The selected running frontend became persistently/runtime masked after
+      preflight but before this protected window. Refusing to stop it because
+      restoration could not be guaranteed after quiescing. No migration runtime
+      mask has been applied yet.
+
 - name: Remember that the configured web frontend must be restored
   ansible.builtin.set_fact:
     datev_skr04_web_service_was_running: true
