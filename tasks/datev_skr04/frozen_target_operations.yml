@@ -13,6 +13,12 @@
     - name: Revalidate frontend runtime masks at the target-write boundary
       ansible.builtin.include_tasks: web_service_quiesce_gate.yml
 
+    - name: Revalidate backend runtime masks after the frontend target-write gate
+      ansible.builtin.include_tasks: backend_runtime_quiesce_gate.yml
+      vars:
+        datev_skr04_backend_units_to_gate: "{{ datev_skr04_target_backend_units | default([]) }}"
+        datev_skr04_backend_gate_context: target-write
+
     - name: Revalidate the approved public-schema closing boundary while frozen
       ansible.builtin.include_tasks: public_source_schema_contract.yml
 
