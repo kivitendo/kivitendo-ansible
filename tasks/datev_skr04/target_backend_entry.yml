@@ -9,6 +9,9 @@
       {{ kivitendo_fcgi_service_name | default('kivitendo-fcgi') }}
     datev_skr04_target_window_task_service_name: >-
       {{ kivitendo_task_server_service_name | default('kivitendo-task-server') }}
+    datev_skr04_target_backend_units:
+      - "{{ (kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service' }}"
+      - "{{ (kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service' }}"
     datev_skr04_target_window_fcgi_was_running: >-
       {{ ansible_facts.services.get((kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service', {}).get('state', '') == 'running' }}
     datev_skr04_target_window_task_was_running: >-
