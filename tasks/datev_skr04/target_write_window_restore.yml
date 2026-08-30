@@ -18,19 +18,11 @@
 
 - name: Bind authoritative target-window backend restore contract
   ansible.builtin.set_fact:
-    datev_skr04_target_backend_restore_items: >-
-      {{
-        (
-          ([{'unit': datev_skr04_target_window_fcgi_service_name + '.service',
-             'was_running': datev_skr04_target_window_fcgi_was_running | bool}]
-           if (datev_skr04_target_window_fcgi_service_name + '.service') in (datev_skr04_target_backend_units | default([]))
-           else []) +
-          ([{'unit': datev_skr04_target_window_task_service_name + '.service',
-             'was_running': datev_skr04_target_window_task_was_running | bool}]
-           if (datev_skr04_target_window_task_service_name + '.service') in (datev_skr04_target_backend_units | default([]))
-           else [])
-        )
-      }}
+    datev_skr04_target_backend_restore_items:
+      - unit: "{{ datev_skr04_target_window_fcgi_service_name }}.service"
+        was_running: "{{ datev_skr04_target_window_fcgi_was_running | bool }}"
+      - unit: "{{ datev_skr04_target_window_task_service_name }}.service"
+        was_running: "{{ datev_skr04_target_window_task_was_running | bool }}"
 
 - name: Restore backend runtime masks and authoritative entry states
   ansible.builtin.include_tasks: backend_runtime_restore.yml
