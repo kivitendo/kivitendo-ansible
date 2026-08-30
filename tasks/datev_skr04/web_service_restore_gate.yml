@@ -5,6 +5,16 @@
 - name: Require successful safe web and backend recovery after the snapshot window
   ansible.builtin.assert:
     that:
+      - >-
+        datev_skr04_web_runtime_unmask_ok | default(false) | bool or
+        (
+          datev_skr04_web_runtime_reseal_ok | default(false) | bool and
+          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') != 'running' and
+          (
+            datev_skr04_other_web_service_unit not in ansible_facts.services or
+            ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
+          )
+        )
       - datev_skr04_web_runtime_unmask_ok | default(false) | bool
       - datev_skr04_web_restore_allowed | default(true) | bool
       - >-
@@ -19,8 +29,7 @@
         )
     fail_msg: >-
       Snapshot recovery did not return production to its accepted entry state.
-      The alternate supported frontend must remain inactive, migration-added
-      runtime masks must be removed, required backends must be healthy, and the
-      selected frontend must be restored. When backend recovery is unhealthy the
-      frontend intentionally remains closed, but the migration fails here after
-      recording that safe closed state instead of continuing toward target work.
+      Any partial runtime-unmask failure is first resealed with both supported
+      frontends stopped and runtime-masked. Required backends must then be
+      healthy, migration-added masks must be removed successfully, and the
+      selected frontend must be restored before the migration may continue.
