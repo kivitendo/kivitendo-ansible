@@ -37,6 +37,7 @@ def main() -> int:
         "restore_gate": "tasks/datev_skr04/web_service_restore_gate.yml",
         "frozen": "tasks/datev_skr04/frozen_target_operations.yml",
         "target_restore": "tasks/datev_skr04/target_write_window_restore.yml",
+        "target_restore_gate": "tasks/datev_skr04/target_write_window_restore_gate.yml",
         "docs": "docs/DATEV_SKR04_MIGRATION.md",
     }
 
@@ -50,7 +51,10 @@ def main() -> int:
 
     text = {key: read(path) for key, path in files.items()}
 
-    for key in ("defaults", "local", "playbook", "contract", "quiesce", "restore", "restore_gate", "frozen", "target_restore"):
+    for key in (
+        "defaults", "local", "playbook", "contract", "quiesce", "restore",
+        "restore_gate", "frozen", "target_restore", "target_restore_gate",
+    ):
         try:
             yaml.safe_load(text[key])
         except Exception as exc:
@@ -81,13 +85,21 @@ def main() -> int:
                     "web_service_restore_gate.yml"),
             "snapshot is not enclosed by explicit web-service quiesce/restoration", failures)
 
+    require(ordered(text["quiesce"],
+                    "Reset configured web frontend restore state for this window",
+                    "Require a single supported running web frontend before quiescing",
+                    "Remember that the configured web frontend must be restored"),
+            "per-window web restore state is not reset before entry validation", failures)
     require("state: stopped" in text["quiesce"] and
             "Require all supported web frontend write paths to remain quiesced" in text["quiesce"],
             "configured web frontend is not fail-closed when quiescing", failures)
     require(text["quiesce"].count("datev_skr04_other_web_service_unit") >= 2,
             "alternate supported frontend is not checked before and after quiescing", failures)
+
     require("failed_when: false" in text["restore"],
             "web restoration can prevent remaining service restore attempts", failures)
+    require("datev_skr04_web_restore_allowed | default(true) | bool" in text["restore"],
+            "web frontend cannot be kept closed when backend recovery is unhealthy", failures)
     require("Require the configured web frontend to be restored" in text["restore_gate"],
             "snapshot web-service restoration lacks a final verification gate", failures)
 
@@ -96,12 +108,18 @@ def main() -> int:
                     "target_write_window_quiesce.yml"),
             "target-write window does not stop the selected HTTP frontend first", failures)
     require(ordered(text["frozen"],
+                    "target_write_window_restore.yml",
                     "web_service_restore.yml",
-                    "target_write_window_restore.yml"),
-            "target-write restore does not attempt the selected HTTP frontend before the joint gate", failures)
-    require("datev_skr04_web_service_restore_attempt.failed" in text["target_restore"] and
-            "datev_skr04_web_service_unit" in text["target_restore"],
-            "joint target-window restore gate does not verify the selected HTTP frontend", failures)
+                    "target_write_window_restore_gate.yml"),
+            "target-write recovery does not restore backends before reopening the HTTP frontend", failures)
+    require("datev_skr04_target_window_backends_ready" in text["target_restore"],
+            "backend restoration readiness is not recorded before frontend recovery", failures)
+    require("datev_skr04_target_window_backends_ready | default(false) | bool" in text["frozen"],
+            "frontend restoration is not conditioned on healthy backends", failures)
+    require("datev_skr04_web_service_restore_attempt.failed" in text["target_restore_gate"] and
+            "datev_skr04_web_service_unit" in text["target_restore_gate"] and
+            "datev_skr04_target_window_backends_ready" in text["target_restore_gate"],
+            "joint target-window restore gate does not verify backend-first frontend recovery", failures)
 
     require("`apache2` or `nginx`" in text["docs"] and
             "datev_skr04_web_service_name: nginx" in text["docs"],
