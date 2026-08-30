@@ -142,17 +142,29 @@
 
         - name: Capture mandatory snapshots with the configured web frontend quiesced
           block:
+            - name: Capture backend entry state before the snapshot window
+              ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_backend_entry.yml
+
             - name: Stop the configured web frontend before the consistent snapshot
               ansible.builtin.include_tasks: tasks/datev_skr04/web_service_quiesce.yml
 
             - name: Capture mandatory source, auth, installation and document snapshots
               ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
           always:
-            - name: Attempt restoration of the configured web frontend after the snapshot window
-              ansible.builtin.include_tasks: tasks/datev_skr04/web_service_restore.yml
+            - name: Revalidate actual backend recovery after snapshot handling
+              ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_backend_restore_status.yml
 
-            - name: Verify configured web frontend restoration after the snapshot window
+            - name: Attempt restoration of the configured web frontend only after healthy backends
+              ansible.builtin.include_tasks: tasks/datev_skr04/web_service_restore.yml
+              vars:
+                datev_skr04_web_restore_allowed: >-
+                  {{ datev_skr04_snapshot_backends_ready | default(false) | bool }}
+
+            - name: Verify safe single-frontend state after the snapshot window
               ansible.builtin.include_tasks: tasks/datev_skr04/web_service_restore_gate.yml
+              vars:
+                datev_skr04_web_restore_allowed: >-
+                  {{ datev_skr04_snapshot_backends_ready | default(false) | bool }}
 
         - name: Finalize and validate the actual snapshot evidence timestamp
           ansible.builtin.include_tasks: tasks/datev_skr04/finalize_snapshot_manifest.yml
