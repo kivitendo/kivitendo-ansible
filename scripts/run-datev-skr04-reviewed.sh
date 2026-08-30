@@ -35,10 +35,9 @@ git -C "$SOURCE_REPO" cat-file -e "${EXPECTED_SHA}^{commit}" \
 
 RUN_ROOT="/root/kivitendo-datev-reviewed"
 RUN_DIR="${RUN_ROOT}/${EXPECTED_SHA}"
+install -d -m 0700 "$RUN_ROOT"
 WORK_DIR="$(mktemp -d "${RUN_ROOT}/.${EXPECTED_SHA}.XXXXXX")"
 trap 'rm -rf -- "$WORK_DIR"' EXIT
-
-install -d -m 0700 "$RUN_ROOT"
 
 if [[ -e "$RUN_DIR" ]]; then
   [[ -d "$RUN_DIR" && ! -L "$RUN_DIR" ]] \
