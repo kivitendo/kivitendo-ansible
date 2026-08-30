@@ -7,14 +7,14 @@
     datev_skr04_web_reseal_required: false
     datev_skr04_web_restore_safe: false
 
-- name: Remove migration-added runtime masks when backend recovery is allowed
+- name: Remove only migration-owned runtime masks when backend recovery is allowed
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - unmask
       - --runtime
-      - "{{ item.item }}"
-  loop: "{{ datev_skr04_web_enablement_before_mask.results | default([]) }}"
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_masked_units | default([]) }}"
   register: datev_skr04_web_runtime_unmask_attempts
   changed_when: true
   failed_when: false
@@ -80,7 +80,7 @@
         ansible_facts.services[datev_skr04_other_web_service_unit].state == 'running'
       )
 
-- name: Reseal every supported frontend after any post-unmask recovery violation
+- name: Reseal every migration-owned frontend after any post-unmask recovery violation
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
@@ -88,7 +88,7 @@
       - --runtime
       - --now
       - "{{ item }}"
-  loop: "{{ datev_skr04_web_units_to_mask | default([]) }}"
+  loop: "{{ datev_skr04_web_masked_units | default([]) }}"
   register: datev_skr04_web_runtime_reseal_attempts
   changed_when: true
   failed_when: false
@@ -102,13 +102,13 @@
     - item.rc is defined
     - item.rc | int != 0
 
-- name: Verify runtime masks after fail-closed reseal or retained-backend failure
+- name: Verify migration-owned runtime masks after fail-closed reseal or retained-backend failure
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - is-enabled
       - "{{ item }}"
-  loop: "{{ datev_skr04_web_units_to_mask | default([]) }}"
+  loop: "{{ datev_skr04_web_masked_units | default([]) }}"
   register: datev_skr04_web_runtime_reseal_verification
   changed_when: false
   failed_when: false
@@ -129,19 +129,15 @@
 - name: Re-read supported web frontend state after recovery handling
   ansible.builtin.service_facts:
 
-- name: Record any running frontend after fail-closed reseal
+- name: Record any migration-owned frontend running after fail-closed reseal
   ansible.builtin.set_fact:
     datev_skr04_web_runtime_reseal_ok: false
+  loop: "{{ datev_skr04_web_masked_units | default([]) }}"
   when:
     - >-
       datev_skr04_web_reseal_required | bool or
       not (datev_skr04_web_restore_allowed | default(true) | bool)
-    - >-
-      ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running' or
-      (
-        datev_skr04_other_web_service_unit in ansible_facts.services and
-        ansible_facts.services[datev_skr04_other_web_service_unit].state == 'running'
-      )
+    - ansible_facts.services.get(item, {}).get('state', '') == 'running'
 
 - name: Bind successful safe configured frontend restoration
   ansible.builtin.set_fact:
