@@ -9,6 +9,7 @@
   vars_files:
     - vars.yml
     - datev-skr04-defaults.yml
+    - [datev-skr04.local.yml, datev-skr04.local.example.yml]
 
   tasks:
     - name: Bind the live filesystem document store to mandatory recovery evidence
