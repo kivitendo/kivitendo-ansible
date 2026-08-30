@@ -1,0 +1,32 @@
+---
+- name: Validate backend pre-mutation contract inputs
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backend_contract_units is defined
+      - datev_skr04_backend_contract_units | length > 0
+      - datev_skr04_backend_contract_context is defined
+    fail_msg: >-
+      Backend pre-mutation validation requires the complete configured backend
+      unit list and a protected-window context.
+
+- name: Read every configured backend unit-file state before frontend mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_contract_units }}"
+  register: datev_skr04_backend_contract_enablement
+  changed_when: false
+  failed_when: false
+
+- name: Require every configured backend to exist and be safely runtime-maskable before frontend mutation
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | default('') | trim) in datev_skr04_restartable_web_enablement_states
+    fail_msg: >-
+      A configured {{ datev_skr04_backend_contract_context }} backend is absent,
+      pre-masked, runtime-linked, transient, or otherwise outside the reviewed
+      systemd unit-file contract. Refusing to stop or mask the HTTP frontend
+      before backend recovery is known to be possible.
+  loop: "{{ datev_skr04_backend_contract_enablement.results }}"
