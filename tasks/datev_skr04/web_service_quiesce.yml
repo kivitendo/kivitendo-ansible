@@ -1,15 +1,19 @@
 ---
-- name: Re-read configured web frontend state before quiescing
+- name: Re-read supported web frontend state before quiescing
   ansible.builtin.service_facts:
 
-- name: Require the configured web frontend to be running before quiescing
+- name: Require a single supported running web frontend before quiescing
   ansible.builtin.assert:
     that:
       - datev_skr04_web_service_unit in ansible_facts.services
       - ansible_facts.services[datev_skr04_web_service_unit].state == 'running'
+      - >-
+        datev_skr04_other_web_service_unit not in ansible_facts.services or
+        ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
     fail_msg: >-
-      The configured kivitendo web frontend is not running at the start of a
-      protected quiesce window. Refusing to infer service state or continue.
+      The selected kivitendo web frontend must be the only supported running
+      frontend at the start of a protected quiesce window. Refusing to continue
+      while another supported HTTP write path is active.
 
 - name: Remember that the configured web frontend must be restored
   ansible.builtin.set_fact:
@@ -20,13 +24,17 @@
     name: "{{ datev_skr04_web_service_name }}"
     state: stopped
 
-- name: Confirm the configured web frontend is stopped
+- name: Confirm supported web frontends are quiesced
   ansible.builtin.service_facts:
 
-- name: Require the configured web frontend to remain quiesced
+- name: Require all supported web frontend write paths to remain quiesced
   ansible.builtin.assert:
     that:
       - ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') != 'running'
+      - >-
+        datev_skr04_other_web_service_unit not in ansible_facts.services or
+        ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
     fail_msg: >-
-      The configured kivitendo web frontend could not be quiesced. No protected
-      snapshot or target-write operation is allowed while it can accept writes.
+      A supported kivitendo web frontend remains active after quiescing. No
+      protected snapshot or target-write operation is allowed while an HTTP
+      write path can still accept traffic.
