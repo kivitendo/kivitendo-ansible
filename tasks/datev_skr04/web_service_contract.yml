@@ -7,19 +7,27 @@
       datev_skr04_web_service_name must explicitly identify the write-capable
       kivitendo HTTP frontend. Supported values are apache2 and nginx.
 
-- name: Read service state for the configured kivitendo web frontend
+- name: Read service state for the supported kivitendo web frontends
   ansible.builtin.service_facts:
 
-- name: Bind the configured web frontend to an existing running systemd unit
+- name: Bind the selected and alternate supported web frontend units
   ansible.builtin.set_fact:
     datev_skr04_web_service_unit: "{{ datev_skr04_web_service_name }}.service"
+    datev_skr04_other_web_service_name: >-
+      {{ 'nginx' if datev_skr04_web_service_name == 'apache2' else 'apache2' }}
+    datev_skr04_other_web_service_unit: >-
+      {{ ('nginx' if datev_skr04_web_service_name == 'apache2' else 'apache2') + '.service' }}
 
-- name: Require the configured web frontend to exist and be running
+- name: Require exactly one supported running kivitendo web frontend
   ansible.builtin.assert:
     that:
       - datev_skr04_web_service_unit in ansible_facts.services
       - ansible_facts.services[datev_skr04_web_service_unit].state == 'running'
+      - >-
+        datev_skr04_other_web_service_unit not in ansible_facts.services or
+        ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
     fail_msg: >-
-      The configured kivitendo web frontend does not exist or is not running.
-      Refusing to continue because the migration must know exactly which HTTP
-      service to quiesce during snapshot and target-write windows.
+      The configured kivitendo web frontend must exist and be running, and the
+      other supported frontend must not be running at the same time. Refusing to
+      continue unless the migration can identify the single HTTP service whose
+      quiescing closes the supported web-write path.
