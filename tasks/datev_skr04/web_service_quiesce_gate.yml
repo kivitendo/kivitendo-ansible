@@ -34,3 +34,9 @@
       A supported HTTP frontend is running at the protected-operation boundary.
       The migration refuses to snapshot or write a target while a web write path
       can accept traffic.
+
+- name: Jointly revalidate backend masks and stopped state after the frontend boundary gate
+  ansible.builtin.include_tasks: backend_runtime_quiesce_gate.yml
+  vars:
+    datev_skr04_backend_units_to_gate: "{{ datev_skr04_backend_masked_units | default([]) }}"
+    datev_skr04_backend_gate_context: protected-window
