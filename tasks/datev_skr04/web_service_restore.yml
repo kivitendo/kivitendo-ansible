@@ -1,4 +1,18 @@
 ---
+- name: Re-read supported web frontend state before restoration
+  ansible.builtin.service_facts:
+
+- name: Decide whether the configured web frontend may be reopened safely
+  ansible.builtin.set_fact:
+    datev_skr04_web_restore_safe: >-
+      {{
+        (datev_skr04_web_restore_allowed | default(true) | bool) and
+        (
+          datev_skr04_other_web_service_unit not in ansible_facts.services or
+          ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
+        )
+      }}
+
 - name: Attempt configured web frontend restoration
   ansible.builtin.service:
     name: "{{ datev_skr04_web_service_name }}"
@@ -7,4 +21,4 @@
   failed_when: false
   when:
     - datev_skr04_web_service_was_running | default(false) | bool
-    - datev_skr04_web_restore_allowed | default(true) | bool
+    - datev_skr04_web_restore_safe | bool
