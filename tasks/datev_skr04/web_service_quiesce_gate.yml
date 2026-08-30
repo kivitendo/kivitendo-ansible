@@ -1,4 +1,13 @@
 ---
+- name: Require complete backend identity list for the joint protected boundary
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backend_boundary_units is defined
+      - datev_skr04_backend_boundary_units | length == 2
+    fail_msg: >-
+      The joint protected-operation boundary must always include both configured
+      backend identities, regardless of service discovery timing.
+
 - name: Re-read supported web frontend state at the protected-operation boundary
   ansible.builtin.service_facts:
 
@@ -35,8 +44,8 @@
       The migration refuses to snapshot or write a target while a web write path
       can accept traffic.
 
-- name: Jointly revalidate backend masks and stopped state after the frontend boundary gate
+- name: Jointly revalidate both configured backend masks and stopped state after the frontend boundary gate
   ansible.builtin.include_tasks: backend_runtime_quiesce_gate.yml
   vars:
-    datev_skr04_backend_units_to_gate: "{{ datev_skr04_backend_masked_units | default([]) }}"
+    datev_skr04_backend_units_to_gate: "{{ datev_skr04_backend_boundary_units }}"
     datev_skr04_backend_gate_context: protected-window
