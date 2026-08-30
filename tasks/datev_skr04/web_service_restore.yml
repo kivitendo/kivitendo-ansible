@@ -2,6 +2,7 @@
 - name: Initialize runtime-mask cleanup status
   ansible.builtin.set_fact:
     datev_skr04_web_runtime_unmask_ok: true
+    datev_skr04_web_runtime_reseal_ok: true
 
 - name: Remove only migration-added runtime masks when recovery is allowed
   ansible.builtin.command:
@@ -27,8 +28,68 @@
     - item.rc is defined
     - item.rc | int != 0
 
+- name: Reapply runtime masks after any partial unmask failure
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - mask
+      - --runtime
+      - --now
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_units_to_mask | default([]) }}"
+  register: datev_skr04_web_runtime_reseal_attempts
+  changed_when: true
+  failed_when: false
+  when:
+    - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - datev_skr04_web_restore_allowed | default(true) | bool
+    - not (datev_skr04_web_runtime_unmask_ok | bool)
+
+- name: Record any runtime reseal command failure
+  ansible.builtin.set_fact:
+    datev_skr04_web_runtime_reseal_ok: false
+  loop: "{{ datev_skr04_web_runtime_reseal_attempts.results | default([]) }}"
+  when:
+    - item.rc is defined
+    - item.rc | int != 0
+
+- name: Verify runtime masks after partial unmask failure
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_units_to_mask | default([]) }}"
+  register: datev_skr04_web_runtime_reseal_verification
+  changed_when: false
+  failed_when: false
+  when:
+    - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - datev_skr04_web_restore_allowed | default(true) | bool
+    - not (datev_skr04_web_runtime_unmask_ok | bool)
+
+- name: Record incomplete runtime reseal verification
+  ansible.builtin.set_fact:
+    datev_skr04_web_runtime_reseal_ok: false
+  loop: "{{ datev_skr04_web_runtime_reseal_verification.results | default([]) }}"
+  when:
+    - item.stdout is defined
+    - (item.stdout | trim) not in ['masked', 'masked-runtime']
+
 - name: Re-read supported web frontend state before restoration
   ansible.builtin.service_facts:
+
+- name: Record an unsafe running frontend after partial unmask recovery
+  ansible.builtin.set_fact:
+    datev_skr04_web_runtime_reseal_ok: false
+  when:
+    - not (datev_skr04_web_runtime_unmask_ok | bool)
+    - >-
+      ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running' or
+      (
+        datev_skr04_other_web_service_unit in ansible_facts.services and
+        ansible_facts.services[datev_skr04_other_web_service_unit].state == 'running'
+      )
 
 - name: Decide whether the configured web frontend may be reopened safely
   ansible.builtin.set_fact:
