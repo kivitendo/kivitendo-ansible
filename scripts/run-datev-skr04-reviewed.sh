@@ -67,6 +67,9 @@ chmod 0600 "$LOCK_FILE"
 log "Acquired host-wide DATEV migration lock: $LOCK_FILE"
 
 # TRUST ANCHOR:
+# Generic form: git show <reviewed-sha>:scripts/run-datev-skr04-reviewed.sh
+# The production invocation below is deliberately stronger than this generic
+# marker because both Git and Bash are started under explicit empty environments.
 # Run the immutable launcher blob itself with BOTH Git and Bash isolated from
 # the invoking root shell. Do not execute the mutable working-tree script.
 #
