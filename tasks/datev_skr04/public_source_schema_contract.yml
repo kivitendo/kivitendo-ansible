@@ -14,6 +14,7 @@
         (SELECT count(*)::bigint FROM public.acc_trans
           WHERE transdate < %(fiscal_start)s::date) AS postings_before_fiscal_start,
         d.coa,
+        d.closedto::text AS closed_to,
         d.accounting_method,
         d.profit_determination
       FROM public.defaults d;
@@ -28,6 +29,7 @@
       - datev_skr04_public_source_invariants.query_result | length == 1
       - datev_skr04_public_source_invariants.query_result[0].defaults_rows | int == 1
       - datev_skr04_public_source_invariants.query_result[0].coa == datev_skr04_expected_source_coa
+      - datev_skr04_public_source_invariants.query_result[0].closed_to == datev_skr04_closed_to
       - datev_skr04_public_source_invariants.query_result[0].account_count | int > 0
       - datev_skr04_public_source_invariants.query_result[0].invalid_account_count | int == 0
       - datev_skr04_public_source_invariants.query_result[0].postings_before_fiscal_start | int == 0
@@ -35,5 +37,7 @@
       - datev_skr04_public_source_invariants.query_result[0].profit_determination == datev_skr04_profit_determination
     fail_msg: >-
       The source public schema no longer matches the audited four-digit SKR03/EÜR
-      state or contains a posting before the approved short fiscal year. The
-      migration never trusts the PostgreSQL superuser's ambient search_path.
+      state, is not closed exactly through the approved 2026-07-12 boundary, or
+      contains a posting before the approved short fiscal year. The migration
+      never trusts the PostgreSQL superuser's ambient search_path and never
+      changes the source closing date itself.
