@@ -6,9 +6,8 @@
   serial: 1
   any_errors_fatal: true
 
-  # Perl reads PERL5OPT/PERL5LIB before a script's BEGIN block. Clear every
-  # startup/search-path customization at play scope so the privileged native
-  # helper can only load code from its explicitly constructed @INC.
+  # Perl reads these variables before a script BEGIN block. Clear ambient
+  # startup/search-path customization for every task in this reviewed play.
   environment:
     PERL5OPT: ""
     PERL5LIB: ""
@@ -63,6 +62,12 @@
         - always
         - preflight
 
+    - name: Directly bind every privileged installed kivitendo Perl and SQL input
+      ansible.builtin.include_tasks: tasks/datev_skr04/kivitendo_privileged_source_contract.yml
+      tags:
+        - always
+        - preflight
+
     - name: Enforce the isolated PostgreSQL application-role membership contract
       ansible.builtin.include_tasks: tasks/datev_skr04/application_role_contract.yml
       tags:
@@ -71,6 +76,18 @@
 
     - name: Bind the protected source authentication state
       ansible.builtin.include_tasks: tasks/datev_skr04/auth_baseline.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Require DATEV support for every prepared target before snapshots
+      ansible.builtin.assert:
+        that:
+          - datev_skr04_feature_datev | bool
+        fail_msg: >-
+          The parallel target is explicitly a DATEV target. feature_datev may
+          not be disabled; refusing a configuration that would necessarily fail
+          after target creation.
       tags:
         - always
         - preflight
@@ -97,156 +114,17 @@
           ansible.builtin.include_tasks: tasks/datev_skr04/finalize_snapshot_manifest.yml
 
         - name: Validate mandatory snapshot evidence before any target operation
+          ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_evidence_gate.yml
           tags:
             - always
-          block:
-            - name: Derive the exact snapshot evidence paths for this run
-              ansible.builtin.set_fact:
-                datev_skr04_snapshot_gate_directory: >-
-                  {{ datev_skr04_backup_root }}/{{ datev_skr04_run_id }}
-                datev_skr04_snapshot_gate_paths:
-                  - "{{ datev_skr04_backup_root }}/{{ datev_skr04_run_id }}/source-{{ datev_skr04_source_db }}.dump"
-                  - "{{ datev_skr04_backup_root }}/{{ datev_skr04_run_id }}/auth-{{ datev_skr04_auth_db }}.dump"
-                  - "{{ datev_skr04_backup_root }}/{{ datev_skr04_run_id }}/kivitendo-installation.tar.gz"
-                  - "{{ datev_skr04_backup_root }}/{{ datev_skr04_run_id }}/kivitendo-documents.tar.gz"
-                  - "{{ datev_skr04_backup_root }}/{{ datev_skr04_run_id }}/manifest.yml"
 
-            - name: Re-inspect every mandatory snapshot artifact
-              ansible.builtin.stat:
-                path: "{{ item }}"
-                follow: false
-                checksum_algorithm: sha256
-              loop: "{{ datev_skr04_snapshot_gate_paths }}"
-              register: datev_skr04_snapshot_gate_files
-
-            - name: Require every mandatory snapshot artifact to be a non-empty regular file
-              ansible.builtin.assert:
-                that:
-                  - item.stat.exists | bool
-                  - item.stat.isreg | default(false) | bool
-                  - not (item.stat.islnk | default(false) | bool)
-                  - item.stat.size | default(0) | int > 0
-                  - (item.stat.checksum | default('')) is match('^[0-9a-f]{64}$')
-                fail_msg: >-
-                  Mandatory snapshot artifact {{ item.item }} is missing, empty,
-                  not a regular file, a symlink or lacks a SHA-256 checksum.
-                  Target creation is blocked.
-              loop: "{{ datev_skr04_snapshot_gate_files.results }}"
-              loop_control:
-                label: "{{ item.item }}"
-
-            - name: Read the protected snapshot manifest
-              ansible.builtin.slurp:
-                src: "{{ datev_skr04_snapshot_gate_directory }}/manifest.yml"
-              register: datev_skr04_snapshot_gate_manifest
-
-            - name: Parse the protected snapshot manifest
-              ansible.builtin.set_fact:
-                datev_skr04_snapshot_gate_manifest_payload: >-
-                  {{ datev_skr04_snapshot_gate_manifest.content | b64decode | from_yaml }}
-
-            - name: Bind the snapshot manifest and checksums to this exact migration run
-              ansible.builtin.assert:
-                that:
-                  - datev_skr04_backup_directory | default('') == datev_skr04_snapshot_gate_directory
-                  - datev_skr04_snapshot_fingerprint | default('') == datev_skr04_source_fingerprint_actual
-                  - datev_skr04_snapshot_fingerprint | default('') == datev_skr04_expected_source_fingerprint
-                  - datev_skr04_snapshot_gate_manifest_payload is mapping
-                  - datev_skr04_snapshot_gate_manifest_payload.version | int == 2
-                  - datev_skr04_snapshot_gate_manifest_payload.run_id == datev_skr04_run_id
-                  - datev_skr04_snapshot_gate_manifest_payload.source_database == datev_skr04_source_db
-                  - datev_skr04_snapshot_gate_manifest_payload.target_database == datev_skr04_target_db
-                  - datev_skr04_snapshot_gate_manifest_payload.source_client_id | int == datev_skr04_source_client_id | int
-                  - datev_skr04_snapshot_gate_manifest_payload.source_fingerprint == datev_skr04_snapshot_fingerprint
-                  - datev_skr04_snapshot_gate_manifest_payload.created_at == datev_skr04_snapshot_manifest_time.stdout
-                  - datev_skr04_snapshot_gate_manifest_payload.evidence_finalized_at == datev_skr04_snapshot_manifest_time.stdout
-                  - datev_skr04_snapshot_gate_manifest_payload.local_files_snapshotted | bool
-                  - not (datev_skr04_snapshot_gate_manifest_payload.source_modified_by_workflow | bool)
-                  - datev_skr04_snapshot_gate_manifest_payload.source_dump_sha256 == datev_skr04_snapshot_gate_files.results[0].stat.checksum
-                  - datev_skr04_snapshot_gate_manifest_payload.auth_dump_sha256 == datev_skr04_snapshot_gate_files.results[1].stat.checksum
-                  - datev_skr04_snapshot_gate_manifest_payload.kivitendo_installation_archive_sha256 == datev_skr04_snapshot_gate_files.results[2].stat.checksum
-                  - datev_skr04_snapshot_gate_manifest_payload.kivitendo_documents_archive_sha256 == datev_skr04_snapshot_gate_files.results[3].stat.checksum
-                fail_msg: >-
-                  Mandatory snapshot evidence is incomplete, stale, altered or
-                  belongs to a different source, target or migration run. No
-                  target database, sidecar contract or auth row will be created.
-
-            - name: Mark snapshot evidence complete for this exact run
-              ansible.builtin.set_fact:
-                datev_skr04_snapshot_complete:
-                  run_id: "{{ datev_skr04_run_id }}"
-                  backup_directory: "{{ datev_skr04_snapshot_gate_directory }}"
-                  source_fingerprint: "{{ datev_skr04_snapshot_fingerprint }}"
-                  manifest_sha256: "{{ datev_skr04_snapshot_gate_files.results[4].stat.checksum }}"
-                  postgresql_system_identifier: "{{ datev_skr04_bound_system_identifier }}"
-
-            - name: Assert the snapshot-complete gate is bound to this run and cluster
-              ansible.builtin.assert:
-                that:
-                  - datev_skr04_snapshot_complete is mapping
-                  - datev_skr04_snapshot_complete.run_id == datev_skr04_run_id
-                  - datev_skr04_snapshot_complete.backup_directory == datev_skr04_snapshot_gate_directory
-                  - datev_skr04_snapshot_complete.source_fingerprint == datev_skr04_expected_source_fingerprint
-                  - datev_skr04_snapshot_complete.manifest_sha256 == datev_skr04_snapshot_gate_files.results[4].stat.checksum
-                  - datev_skr04_snapshot_complete.postgresql_system_identifier == datev_skr04_bound_system_identifier
-                fail_msg: >-
-                  The snapshot-complete gate was not established for this run
-                  and PostgreSQL cluster. All target operations remain blocked.
-
-        - name: Run target-only operations after the snapshot-complete gate
+        - name: Run the frozen target-write window only after the snapshot gate
+          ansible.builtin.include_tasks: tasks/datev_skr04/frozen_target_operations.yml
           when:
             - (datev_skr04_snapshot_complete | default({})).get('run_id', '') == datev_skr04_run_id
             - (datev_skr04_snapshot_complete | default({})).get('source_fingerprint', '') == datev_skr04_expected_source_fingerprint
             - (datev_skr04_snapshot_complete | default({})).get('backup_directory', '') == datev_skr04_snapshot_gate_directory
             - (datev_skr04_snapshot_complete | default({})).get('postgresql_system_identifier', '') == datev_skr04_bound_system_identifier
-          block:
-            - name: Revalidate the reviewed orchestration checkout immediately before target operations
-              ansible.builtin.include_tasks: tasks/datev_skr04/orchestration_checkout_contract.yml
-
-            - name: Revalidate the bound PostgreSQL cluster immediately before creation
-              ansible.builtin.include_tasks: tasks/datev_skr04/postgresql_cluster_contract.yml
-              vars:
-                datev_skr04_cluster_contract_phase: pre_create
-
-            - name: Assert the final cluster gate is still bound to this run
-              ansible.builtin.assert:
-                that:
-                  - (datev_skr04_cluster_contract | default({})).get('verified', false) | bool
-                  - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'pre_create'
-                  - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_snapshot_complete.postgresql_system_identifier
-                fail_msg: >-
-                  The final PostgreSQL cluster identity was not revalidated
-                  against the snapshot-bound system. Target creation is blocked.
-
-            - name: Revalidate all live creation inputs after snapshotting
-              ansible.builtin.include_tasks: tasks/datev_skr04/pre_create_integrity.yml
-
-            - name: Revalidate the application-role membership graph before elevation
-              ansible.builtin.include_tasks: tasks/datev_skr04/application_role_contract.yml
-
-            - name: Initialize the isolated SKR04 database with guaranteed privilege cleanup
-              block:
-                - name: Run the native isolated SKR04 initializer
-                  ansible.builtin.include_tasks: tasks/datev_skr04/create.yml
-              always:
-                - name: Complete evidence-preserving temporary-elevation cleanup
-                  ansible.builtin.include_tasks: tasks/datev_skr04/post_create_ephemeral_cleanup.yml
-                  when: datev_skr04_ephemeral_role is defined
-
-            - name: Verify every configured target default
-              ansible.builtin.include_tasks: tasks/datev_skr04/verify_target_defaults.yml
-
-            - name: Revalidate the reviewed orchestration checkout before auth registration
-              ansible.builtin.include_tasks: tasks/datev_skr04/orchestration_checkout_contract.yml
-
-            - name: Register a quarantined non-default client without access mappings
-              ansible.builtin.include_tasks: tasks/datev_skr04/register.yml
-
-            - name: Prove target correctness, quarantine and source immutability
-              ansible.builtin.include_tasks: tasks/datev_skr04/verify.yml
-
-            - name: Revalidate the application-role membership graph after target operations
-              ansible.builtin.include_tasks: tasks/datev_skr04/application_role_contract.yml
 
       rescue:
         - name: Report the preserved failed apply state
@@ -289,8 +167,8 @@
       ansible.builtin.debug:
         msg: >-
           Read-only preflight complete. The reviewed orchestration checkout,
-          document store, PostgreSQL application-role graph and socket/TCP
-          cluster binding were verified. No target or staging database, auth
-          client, posting, customer, invoice, default-client or task-server
-          change was made.
+          document store, installed privileged source tree, PostgreSQL role graph,
+          source closing boundary and socket/TCP cluster binding were verified.
+          No target or staging database, auth client, posting, customer, invoice,
+          default-client or task-server change was made.
       when: datev_skr04_mode == 'preflight'
