@@ -43,18 +43,19 @@
   changed_when: false
   failed_when: false
 
-- name: Require a recognized restartable selected frontend at the destructive boundary
+- name: Require every installed supported frontend to be safely runtime-maskable
   ansible.builtin.assert:
     that:
-      - datev_skr04_web_enablement_before_mask.results | length >= 1
       - >-
-        (datev_skr04_web_enablement_before_mask.results[0].stdout | default('') | trim)
+        (item.stdout | default('') | trim)
         in datev_skr04_restartable_web_enablement_states
     fail_msg: >-
-      The selected running frontend no longer reports a recognized restartable
-      systemd enablement state at this protected-window boundary. masked,
-      masked-runtime, not-found, bad, empty and unknown results are rejected
-      before any migration mask/stop action is attempted.
+      A supported frontend no longer reports a reviewed systemd unit-file state
+      that can be runtime-masked and restored at this protected-window boundary.
+      linked, linked-runtime, alias, transient, masked, masked-runtime, not-found,
+      bad, empty and unknown results are rejected before any migration mask/stop
+      action is attempted.
+  loop: "{{ datev_skr04_web_enablement_before_mask.results }}"
 
 - name: Remember that the configured web frontend must be restored
   ansible.builtin.set_fact:
