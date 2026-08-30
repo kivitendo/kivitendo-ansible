@@ -163,6 +163,8 @@
 - name: Read local PostgreSQL database and port state
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: postgres
     query: |
       SELECT
@@ -193,13 +195,19 @@
 - name: Validate the application database role and prior migration cleanup
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: postgres
     query: |
       SELECT
         r.rolcanlogin,
         r.rolcreatedb,
         r.rolsuper,
-        (SELECT count(*)::bigint FROM pg_roles WHERE rolname LIKE 'kivi_migrate_%') AS stale_migration_roles
+        (
+          SELECT count(*)::bigint
+          FROM pg_roles
+          WHERE left(rolname, length('kivi_migrate_')) = 'kivi_migrate_'
+        ) AS stale_migration_roles
       FROM pg_roles r
       WHERE r.rolname = %(db_user)s;
     named_args:
@@ -259,6 +267,8 @@
 - name: Locate the existing source client in kivitendo authentication data
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_auth_db }}"
     query: |
       SELECT id, name, dbhost, dbport, dbname, dbuser, is_default, task_server_user_id
@@ -286,6 +296,8 @@
 - name: Check for conflicting target client registrations
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_auth_db }}"
     query: |
       SELECT id, name, dbname, is_default
@@ -309,6 +321,8 @@
 - name: Read the source accounting state for fingerprinting
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_source_db }}"
     query: "{{ datev_skr04_source_fingerprint_query }}"
   register: datev_skr04_source_fingerprint_raw
@@ -317,6 +331,8 @@
 - name: Read source account-length and fiscal-start invariants
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_source_db }}"
     query: |
       SELECT
