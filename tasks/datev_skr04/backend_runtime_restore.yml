@@ -5,9 +5,10 @@
       - datev_skr04_backend_units_to_mask is defined
       - datev_skr04_backend_restore_items is defined
       - datev_skr04_backend_context is defined
+      - datev_skr04_backend_masked_units is defined
     fail_msg: >-
       Backend runtime-restore inputs are incomplete. Refusing to reopen the web
-      frontend without an explicit backend recovery contract.
+      frontend without an explicit backend recovery and mask-ownership contract.
 
 - name: Initialize backend recovery state
   ansible.builtin.set_fact:
@@ -15,14 +16,14 @@
     datev_skr04_backend_expected_state_ok: true
     datev_skr04_backend_reseal_ok: true
 
-- name: Remove migration runtime masks from protected backends
+- name: Remove only migration-owned runtime masks from protected backends
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - unmask
       - --runtime
       - "{{ item }}"
-  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  loop: "{{ datev_skr04_backend_masked_units | default([]) }}"
   register: datev_skr04_backend_unmask_attempts
   changed_when: true
   failed_when: false
@@ -71,7 +72,7 @@
         not (datev_skr04_backend_expected_state_ok | bool)
       }}
 
-- name: Reseal every backend after any unmask or entry-state recovery violation
+- name: Reseal every migration-owned backend after any recovery violation
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
@@ -79,7 +80,7 @@
       - --runtime
       - --now
       - "{{ item }}"
-  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  loop: "{{ datev_skr04_backend_masked_units | default([]) }}"
   register: datev_skr04_backend_reseal_attempts
   changed_when: true
   failed_when: false
@@ -93,13 +94,13 @@
     - item.rc is defined
     - item.rc | int != 0
 
-- name: Verify backend runtime masks after fail-closed reseal
+- name: Verify migration-owned backend runtime masks after fail-closed reseal
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - is-enabled
       - "{{ item }}"
-  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  loop: "{{ datev_skr04_backend_masked_units | default([]) }}"
   register: datev_skr04_backend_reseal_verification
   changed_when: false
   failed_when: false
@@ -117,10 +118,10 @@
   ansible.builtin.service_facts:
   when: datev_skr04_backend_reseal_required | bool
 
-- name: Record any running backend after fail-closed reseal
+- name: Record any running migration-owned backend after fail-closed reseal
   ansible.builtin.set_fact:
     datev_skr04_backend_reseal_ok: false
-  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  loop: "{{ datev_skr04_backend_masked_units | default([]) }}"
   when:
     - datev_skr04_backend_reseal_required | bool
     - ansible_facts.services.get(item, {}).get('state', '') == 'running'
