@@ -20,6 +20,8 @@
 - name: Locate the active PostgreSQL host-based authentication file
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: postgres
     query: SHOW hba_file;
   register: datev_skr04_hba_file_query
@@ -52,6 +54,8 @@
     - name: Create an expiring ephemeral PostgreSQL superuser for required upgrade scripts
       become_user: postgres
       community.postgresql.postgresql_user:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
         login_db: postgres
         name: "{{ datev_skr04_ephemeral_role }}"
         password: "{{ datev_skr04_ephemeral_password }}"
@@ -72,13 +76,24 @@
         create: false
       no_log: true
 
-    - name: Activate the temporary PostgreSQL access rule
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - reload
-          - postgresql
+    - name: Reload the exact bound PostgreSQL cluster for temporary HBA access
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        query: SELECT pg_reload_conf() AS reloaded;
+      register: datev_skr04_ephemeral_access_reload
       changed_when: true
+
+    - name: Require the temporary HBA reload to have reached the bound cluster
+      ansible.builtin.assert:
+        that:
+          - datev_skr04_ephemeral_access_reload.query_result | length == 1
+          - datev_skr04_ephemeral_access_reload.query_result[0].reloaded | bool
+        fail_msg: >-
+          PostgreSQL did not acknowledge pg_reload_conf() on the bound Unix
+          socket and port. Native initialization will not be attempted.
 
     - name: Create the target through kivitendo's native dataset initializer
       ansible.builtin.command:
@@ -115,6 +130,8 @@
     - name: Disable an existing ephemeral role before any other cleanup attempt
       become_user: postgres
       community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
         login_db: postgres
         query: |
           DO $migration$
@@ -135,13 +152,15 @@
       failed_when: false
       no_log: true
 
-    - name: Reassign any target objects accidentally owned by the ephemeral role
+    - name: Reassign any promoted-target objects accidentally owned by the ephemeral role
       become_user: postgres
       ansible.builtin.command:
         argv:
           - psql
           - --no-psqlrc
           - --set=ON_ERROR_STOP=1
+          - --host=/var/run/postgresql
+          - "--port={{ datev_skr04_db_port }}"
           - "--dbname={{ datev_skr04_target_db }}"
           - --command
           - >-
@@ -166,19 +185,22 @@
       failed_when: false
       no_log: true
 
-    - name: Deactivate the temporary PostgreSQL access rule
-      ansible.builtin.command:
-        argv:
-          - systemctl
-          - reload
-          - postgresql
+    - name: Reload the exact bound PostgreSQL cluster after temporary HBA removal
+      become_user: postgres
+      community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
+        login_db: postgres
+        query: SELECT pg_reload_conf() AS reloaded;
       register: datev_skr04_ephemeral_cleanup_reload
-      changed_when: datev_skr04_ephemeral_cleanup_reload.rc == 0
+      changed_when: true
       failed_when: false
 
     - name: Remove the ephemeral PostgreSQL role
       become_user: postgres
       community.postgresql.postgresql_user:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
         login_db: postgres
         name: "{{ datev_skr04_ephemeral_role }}"
         state: absent
@@ -190,6 +212,8 @@
     - name: Verify no temporary role or active HBA rule remains
       become_user: postgres
       community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
         login_db: postgres
         query: |
           SELECT
@@ -211,13 +235,15 @@
     - name: Assert temporary PostgreSQL elevation was completely removed
       ansible.builtin.assert:
         that:
-          - datev_skr04_ephemeral_cleanup_reload.rc | int == 0
+          - not (datev_skr04_ephemeral_cleanup_reload.failed | default(true) | bool)
+          - datev_skr04_ephemeral_cleanup_reload.query_result | default([]) | length == 1
+          - datev_skr04_ephemeral_cleanup_reload.query_result[0].reloaded | bool
           - datev_skr04_ephemeral_cleanup_verification.query_result | length == 1
           - datev_skr04_ephemeral_cleanup_verification.query_result[0].role_removed | bool
           - datev_skr04_ephemeral_cleanup_verification.query_result[0].hba_rule_removed | bool
         fail_msg: >-
-          Temporary PostgreSQL elevation cleanup is incomplete. The apply run
-          is failed and must not proceed to client registration or cutover.
+          Temporary PostgreSQL elevation cleanup is incomplete on the exact
+          bound cluster. The apply run must not proceed to client registration.
       no_log: true
 
     - name: Clear the ephemeral credential from Ansible facts
@@ -229,6 +255,8 @@
 - name: Confirm the fresh target contains no DATEV profile before configuration
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_target_db }}"
     query: |
       SELECT
@@ -256,6 +284,8 @@
 - name: Apply the approved fiscal boundary and DATEV identifiers to the new target
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_target_db }}"
     query: |
       BEGIN;
