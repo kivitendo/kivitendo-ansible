@@ -63,20 +63,19 @@
     datev_skr04_web_service_was_running: true
     datev_skr04_web_runtime_mask_attempted: true
 
-- name: Runtime-mask and stop every installed supported web frontend
+- name: Add migration-owned runtime masks to every installed supported frontend
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - mask
       - --runtime
-      - --now
       - "{{ item }}"
   loop: "{{ datev_skr04_web_units_to_mask }}"
   register: datev_skr04_web_runtime_mask_attempts
   changed_when: true
   failed_when: false
 
-- name: Record only frontend runtime masks successfully added by this migration
+- name: Record frontend runtime masks successfully added before any stop attempt
   ansible.builtin.set_fact:
     datev_skr04_web_masked_units: >-
       {{
@@ -92,8 +91,20 @@
     that:
       - datev_skr04_web_masked_units | length == datev_skr04_web_units_to_mask | length
     fail_msg: >-
-      One or more supported frontend runtime masks failed. Recovery will remove
-      or reseal only masks recorded as successfully added by this migration.
+      One or more supported frontend runtime masks failed. Recovery owns only
+      masks whose standalone mask command succeeded; no frontend stop operation
+      has been attempted yet.
+
+- name: Stop every runtime-masked supported frontend separately from mask creation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - stop
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_units_to_mask }}"
+  register: datev_skr04_web_stop_attempts
+  changed_when: true
+  failed_when: false
 
 - name: Read runtime mask state for every protected web frontend
   ansible.builtin.command:
@@ -112,8 +123,7 @@
       - (item.stdout | trim) in ['masked', 'masked-runtime']
     fail_msg: >-
       A supported web frontend is not runtime-masked. The protected operation
-      is blocked because a supervisor or operator could restart an HTTP write
-      path after the initial service-state check.
+      is blocked and recovery retains exact mask ownership.
   loop: "{{ datev_skr04_web_runtime_mask_verification.results }}"
 
 - name: Confirm supported web frontends are quiesced
@@ -127,6 +137,6 @@
         datev_skr04_other_web_service_unit not in ansible_facts.services or
         ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
     fail_msg: >-
-      A supported kivitendo web frontend remains active after runtime masking.
-      No protected snapshot or target-write operation is allowed while an HTTP
-      write path can still accept traffic.
+      A supported kivitendo web frontend remains active after its migration-owned
+      mask was recorded and stop was attempted. No protected operation may
+      continue; recovery can safely remove or reseal exactly this run's masks.
