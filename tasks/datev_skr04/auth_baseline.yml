@@ -2,6 +2,8 @@
 - name: Read the protected source authentication state
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_auth_db }}"
     query: |
       SELECT
