@@ -103,6 +103,7 @@ jobs:
           .venv/bin/python tests/validate_datev_skr04.py
           .venv/bin/python tests/validate_datev_skr04_integrity.py
           .venv/bin/python tests/validate_datev_skr04_web_service.py
+          .venv/bin/python tests/validate_datev_skr04_postgresql_cluster.py
 
       - name: Validate all migration YAML documents
         shell: bash
