@@ -1,12 +1,43 @@
 ---
-- name: Derive immutable migration run facts
+- name: Derive generated migration run facts
   ansible.builtin.set_fact:
     datev_skr04_run_id: >-
-      {{ ansible_facts.date_time.iso8601_basic_short | regex_replace('[^0-9T]', '') }}-{{ 999999 | random }}
+      {{ ansible_facts.date_time.iso8601_basic_short | regex_replace('[^0-9T]', '') }}-{{
+        (datev_skr04_source_db ~ ':' ~ datev_skr04_target_db ~ ':' ~ ansible_facts.date_time.epoch)
+        | hash('sha256')
+        | truncate(12, true, '')
+      }}
     datev_skr04_source_fingerprint_query: >-
-      {{ lookup('ansible.builtin.file', 'sql/datev-skr04-source-fingerprint.sql') }}
+      {{ lookup('ansible.builtin.file', playbook_dir ~ '/sql/datev-skr04-source-fingerprint.sql') }}
     datev_skr04_expected_sidecar_config_file: >-
       {{ datev_skr04_sidecar_config_dir }}/datev-buchungsdatenservice-{{ datev_skr04_target_db }}.yml
+
+- name: Reject extra-variable shadowing of generated migration facts
+  ansible.builtin.assert:
+    that:
+      - >-
+        datev_skr04_run_id ==
+        (
+          (ansible_facts.date_time.iso8601_basic_short | regex_replace('[^0-9T]', ''))
+          ~ '-'
+          ~ (
+              (datev_skr04_source_db ~ ':' ~ datev_skr04_target_db ~ ':' ~ ansible_facts.date_time.epoch)
+              | hash('sha256')
+              | truncate(12, true, '')
+            )
+        )
+      - datev_skr04_run_id is match('^[0-9]{8}T[0-9]{6}-[0-9a-f]{12}$')
+      - >-
+        datev_skr04_source_fingerprint_query ==
+        lookup('ansible.builtin.file', playbook_dir ~ '/sql/datev-skr04-source-fingerprint.sql')
+      - >-
+        datev_skr04_expected_sidecar_config_file ==
+        (datev_skr04_sidecar_config_dir ~ '/datev-buchungsdatenservice-' ~ datev_skr04_target_db ~ '.yml')
+    fail_msg: >-
+      A generated run identifier, privileged source-fingerprint query or
+      target-specific sidecar path was shadowed by higher-precedence input.
+      Generated migration facts must match their immutable repository/fact
+      derivation before any database query or filesystem path uses them.
 
 - name: Validate the production-local non-destructive migration contract
   ansible.builtin.assert:
@@ -122,6 +153,30 @@
       tree Perl module precedence, every override must come unchanged from the
       pinned Git revision before privileged target creation is permitted.
   loop: "{{ datev_skr04_override_tree_audit.results }}"
+  loop_control:
+    label: "{{ item.item | join(' ') }}"
+
+- name: Audit every Perl source reachable from the kivitendo module search roots
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", diff, --name-only, HEAD, --, ":(glob)**/*.pm", ":(glob)**/*.pl"]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --exclude-standard, --, ":(glob)**/*.pm", ":(glob)**/*.pl"]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --ignored, --exclude-standard, --, ":(glob)**/*.pm", ":(glob)**/*.pl"]
+  register: datev_skr04_perl_source_tree_audit
+  changed_when: false
+
+- name: Reject any modified, deleted, untracked or ignored Perl source
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim | length == 0
+    fail_msg: >-
+      The installed kivitendo checkout contains a Perl source file that differs
+      from the pinned Git HEAD or is untracked/ignored. The privileged native
+      dataset helper places the installation root and fallback/override trees on
+      Perl's module search path, so no unreviewed .pm/.pl code may execute while
+      application or temporary-superuser credentials are present.
+  loop: "{{ datev_skr04_perl_source_tree_audit.results }}"
   loop_control:
     label: "{{ item.item | join(' ') }}"
 
