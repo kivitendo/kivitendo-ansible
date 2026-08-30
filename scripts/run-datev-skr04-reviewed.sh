@@ -26,6 +26,7 @@ command -v git >/dev/null 2>&1 || fail "git is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
 # TRUST ANCHOR:
+# Generic form: git show <reviewed-sha>:scripts/run-datev-skr04-reviewed.sh
 # Execute this launcher itself from the immutable Git object, never from the
 # mutable working-tree file:
 #   git -C "$SOURCE_REPO" show "$EXPECTED_SHA:scripts/run-datev-skr04-reviewed.sh" \
