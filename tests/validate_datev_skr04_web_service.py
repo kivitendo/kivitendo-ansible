@@ -123,8 +123,14 @@ def main() -> int:
     require(ordered(text["restore"],
                     "Remove only migration-added runtime masks when recovery is allowed",
                     "datev_skr04_web_restore_allowed | default(true) | bool",
+                    "Reapply runtime masks after any partial unmask failure",
+                    "Verify runtime masks after partial unmask failure",
                     "Re-read supported web frontend state before restoration"),
-            "runtime masks can be removed before backend recovery is permitted", failures)
+            "runtime unmask/reseal ordering is not fail-closed", failures)
+    require("datev_skr04_web_runtime_reseal_ok" in text["restore"] and
+            "Record incomplete runtime reseal verification" in text["restore"] and
+            "Record an unsafe running frontend after partial unmask recovery" in text["restore"],
+            "partial runtime-unmask failure is not resealed and verified", failures)
     require("failed_when: false" in text["restore"] and
             "datev_skr04_web_runtime_unmask_ok" in text["restore"] and
             "datev_skr04_other_web_service_unit" in text["restore"] and
@@ -132,9 +138,10 @@ def main() -> int:
             "frontend restoration is not failure-tolerant and backend/single-frontend gated", failures)
     require("datev_skr04_web_runtime_unmask_ok" in text["restore_gate"] and
             "datev_skr04_web_restore_allowed | default(true) | bool" in text["restore_gate"] and
-            "datev_skr04_other_web_service_unit" in text["restore_gate"] and
-            "migration fails here" in text["restore_gate"],
-            "snapshot recovery can continue after unhealthy backend or unsafe frontend state", failures)
+            "datev_skr04_web_runtime_reseal_ok" in text["restore_gate"] and
+            "ansible_facts.services.get(datev_skr04_web_service_unit" in text["restore_gate"] and
+            "datev_skr04_other_web_service_unit" in text["restore_gate"],
+            "snapshot restore gate does not fail only after verifying healthy restore or safe reseal", failures)
 
     # Snapshot backend state is captured before frontend stop; backends are then
     # explicitly stopped from that immutable entry state and restored from it.
@@ -195,8 +202,9 @@ def main() -> int:
             "target recovery does not restore backends before reopening HTTP", failures)
     require("datev_skr04_target_window_backends_ready" in text["target_restore"] and
             "datev_skr04_web_runtime_unmask_ok" in text["target_restore"] and
+            "datev_skr04_web_runtime_reseal_ok" in text["target_restore"] and
             "datev_skr04_other_web_service_unit" in text["target_restore"],
-            "target final recovery gate omits backend, unmask or alternate-frontend proof", failures)
+            "target final recovery gate omits backend, unmask, reseal or alternate-frontend proof", failures)
 
     require("`apache2` or `nginx`" in text["docs"] and
             "datev_skr04_web_service_name: nginx" in text["docs"],
