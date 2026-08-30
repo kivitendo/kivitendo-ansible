@@ -10,6 +10,9 @@
     - name: Rebind the full source fingerprint while frozen
       ansible.builtin.include_tasks: pre_target_source_gate.yml
 
+    - name: Revalidate source authentication and unused target identity while frozen
+      ansible.builtin.include_tasks: pre_target_auth_gate.yml
+
     - name: Revalidate the reviewed orchestration checkout in the frozen window
       ansible.builtin.include_tasks: orchestration_checkout_contract.yml
 
