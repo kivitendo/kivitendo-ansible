@@ -1,6 +1,6 @@
 ---
-# Stop Apache is handled by the generic supported-frontend runtime-mask path
-# before this backend-only task file is entered.
+# Apache/nginx quiescing is handled by the generic supported-frontend
+# runtime-mask path before this backend-only task file is entered.
 - name: Require target backend entry state before quiescing
   ansible.builtin.assert:
     that:
@@ -10,33 +10,35 @@
       - datev_skr04_target_window_task_was_running is defined
     fail_msg: >-
       Target-window backend entry state was not captured before the selected HTTP
-      frontend was stopped. Refusing to infer restoration state after service
-      dependencies may already have changed it.
+      frontend was stopped. Entry flags are required only to restore the original
+      service state after the protected window.
 
-- name: Stop dedicated kivitendo FCGI for the target-write freeze
+- name: Re-read backend state immediately before the target-write freeze
+  ansible.builtin.service_facts:
+
+- name: Stop dedicated kivitendo FCGI from its current state
   ansible.builtin.service:
     name: "{{ datev_skr04_target_window_fcgi_service_name }}"
     state: stopped
-  when: datev_skr04_target_window_fcgi_was_running | bool
+  when:
+    - (datev_skr04_target_window_fcgi_service_name + '.service') in ansible_facts.services
 
-- name: Stop kivitendo task server for the target-write freeze
+- name: Stop kivitendo task server from its current state
   ansible.builtin.service:
     name: "{{ datev_skr04_target_window_task_service_name }}"
     state: stopped
-  when: datev_skr04_target_window_task_was_running | bool
+  when:
+    - (datev_skr04_target_window_task_service_name + '.service') in ansible_facts.services
 
 - name: Confirm write-capable backend services are stopped for the target window
   ansible.builtin.service_facts:
 
-- name: Require all previously running write-capable services to remain stopped
+- name: Require all known write-capable backends to remain stopped regardless of entry state
   ansible.builtin.assert:
     that:
-      - >-
-        not (datev_skr04_target_window_fcgi_was_running | bool) or
-        ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') != 'running'
-      - >-
-        not (datev_skr04_target_window_task_was_running | bool) or
-        ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') != 'running'
+      - ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') != 'running'
+      - ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') != 'running'
     fail_msg: >-
-      A backend that was running at target-window entry could not be quiesced.
-      Source boundary/fingerprint revalidation and all target writes are blocked.
+      A write-capable backend is running at the target-write operation boundary.
+      Entry-state flags are preserved only for restoration; they never exempt a
+      backend that became active after entry capture from being stopped now.
