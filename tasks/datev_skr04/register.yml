@@ -10,6 +10,8 @@
 - name: Register the quarantined target only while the exact source auth identity exists
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_auth_db }}"
     query: |
       WITH locked_source AS (
@@ -92,6 +94,8 @@
 - name: Verify the target has no interactive or group access mappings
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_auth_db }}"
     query: |
       SELECT
