@@ -38,7 +38,11 @@ def main() -> int:
         "pre_target": "tasks/datev_skr04/pre_target_source_gate.yml",
         "public_source": "tasks/datev_skr04/public_source_schema_contract.yml",
         "snapshot_gate": "tasks/datev_skr04/snapshot_evidence_gate.yml",
+        "manifest": "tasks/datev_skr04/finalize_snapshot_manifest.yml",
+        "role_contract": "tasks/datev_skr04/application_role_contract.yml",
         "create": "tasks/datev_skr04/create.yml",
+        "target_defaults": "tasks/datev_skr04/verify_target_defaults.yml",
+        "helper": "scripts/kivitendo-create-dataset.pl",
         "fingerprint": "sql/datev-skr04-source-fingerprint.sql",
         "defaults": "datev-skr04-defaults.yml",
         "installer": "main.yml",
@@ -53,8 +57,11 @@ def main() -> int:
         return 1
 
     t = {key: read(path) for key, path in required.items()}
-    for key in ("playbook", "checkout", "privileged", "frozen", "quiesce", "restore",
-                "pre_target", "public_source", "snapshot_gate", "create", "defaults", "installer", "workflow"):
+    for key in (
+        "playbook", "checkout", "privileged", "frozen", "quiesce", "restore",
+        "pre_target", "public_source", "snapshot_gate", "manifest", "role_contract",
+        "create", "target_defaults", "defaults", "installer", "workflow",
+    ):
         try:
             yaml.safe_load(t[key])
         except Exception as exc:
@@ -69,16 +76,41 @@ def main() -> int:
     require("run-datev-skr04-reviewed.sh" in t["docs"] and "git show" in t["docs"],
             "operator runbook does not use the immutable launcher entry point", failures)
 
+    # The root launcher itself and every executable child must start from an
+    # explicit allowlist environment. This is required because Bash consumes
+    # BASH_ENV before the script body and GNU tar honors TAR_OPTIONS.
+    require(has(t["launcher"],
+                'KIVITENDO_DATEV_CLEAN_ENV:-',
+                "launcher was not started through the documented env -i trust anchor",
+                "unset BASH_ENV ENV TAR_OPTIONS PYTHONPATH PYTHONHOME PYTHONSTARTUP",
+                "/usr/bin/env -i",
+                "/bin/bash --noprofile --norc",
+                "/usr/bin/tar --extract --file=-",
+                "ANSIBLE_NOCOLOR=1"),
+            "root launcher or child startup environment is not fail-closed", failures)
+    require("TAR_OPTIONS" in t["launcher"] and "PYTHONPATH" in t["launcher"],
+            "launcher does not explicitly neutralize tar/python startup injection", failures)
+
+    # Required audit logging is part of success: both sides of the pipeline are
+    # captured and a failed tee must make a successful Ansible run fail overall.
+    require(has(t["launcher"],
+                'pipeline_status=("${PIPESTATUS[@]}")',
+                'ansible_rc="${pipeline_status[0]:-125}"',
+                'tee_rc="${pipeline_status[1]:-125}"',
+                "audit-log writer return code",
+                'if [[ "$tee_rc" -ne 0 ]]'),
+            "launcher can report success when required audit-log writing fails", failures)
+
     # The host-wide lock must cover the entire worktree/Ansible lifetime, and
     # no mutable-repository checkout hook/filter/config may execute as root.
     require(has(t["launcher"],
-                "command -v flock",
+                "/usr/bin/flock",
                 "LOCK_FILE=/root/.kivitendo-datev-skr04.lock",
                 'exec 9>"$LOCK_FILE"',
-                "flock -n 9",
+                "/usr/bin/flock -n 9",
                 "another reviewed DATEV preflight/apply is already running on this host",
-                "env -i",
                 "GIT_CONFIG_NOSYSTEM=1",
+                "GIT_CONFIG_GLOBAL=/dev/null",
                 "core.hooksPath=\"$HOOKS_DIR\"",
                 "core.fsmonitor=false",
                 "core.attributesFile=/dev/null",
@@ -88,19 +120,25 @@ def main() -> int:
                 "Materializing reviewed tree bytes without checkout hooks or filters"),
             "reviewed launcher does not serialize runs or neutralize checkout-time executable Git configuration",
             failures)
-    require(t["launcher"].find("flock -n 9") < t["launcher"].find("worktree add --detach --no-checkout"),
+    require(t["launcher"].find("/usr/bin/flock -n 9") < t["launcher"].find("worktree add --detach --no-checkout"),
             "host-wide lock is acquired only after reviewed worktree creation begins", failures)
     require("worktree add --detach \"$RUN_DIR\"" not in t["launcher"],
             "launcher still contains an ordinary checkout-capable worktree-add path", failures)
 
-    # Defense-in-depth: every migration runtime byte is compared with reviewed HEAD.
+    # Defense-in-depth: every migration runtime byte is compared with reviewed
+    # HEAD using Git invocations whose mutable repository config cannot execute.
     require(has(t["checkout"],
                 "ls-tree", "Read reviewed HEAD blob for every tracked migration runtime input",
                 "Hash every working-tree migration runtime input directly",
-                "assume-unchanged or skip-worktree"),
-            "runtime checkout check can still trust hidden Git index state", failures)
+                "assume-unchanged or skip-worktree",
+                "core.hooksPath=/dev/null", "core.fsmonitor=false",
+                "core.attributesFile=/dev/null", "GIT_CONFIG_NOSYSTEM",
+                "GIT_CONFIG_GLOBAL", "GIT_CONFIG_COUNT"),
+            "runtime checkout verification can execute mutable Git configuration", failures)
     require("tasks/datev_skr04" in t["checkout"] and "vars.yml" in t["checkout"],
             "runtime checkout audit does not cover shared migration inputs", failures)
+    require("[git," not in t["checkout"],
+            "orchestration checkout contract still contains an unisolated short git argv", failures)
 
     # Installed kivitendo privileged source is direct-blob checked, not git-diff trusted.
     require(has(t["privileged"],
@@ -157,7 +195,8 @@ def main() -> int:
                                "datev_skr04_feature_datev | bool"),
             "feature_datev=false is not rejected before snapshots", failures)
 
-    # Snapshot evidence still gates the frozen write window.
+    # Snapshot evidence still gates the frozen write window and the archives
+    # themselves must contain no link-only entries to uncaptured external data.
     require(has(t["snapshot_gate"], "datev_skr04_snapshot_complete", "checksum_algorithm: sha256",
                                    "source_dump_sha256", "auth_dump_sha256",
                                    "kivitendo_installation_archive_sha256",
@@ -165,6 +204,11 @@ def main() -> int:
             "mandatory snapshot evidence gate is incomplete", failures)
     require(t["playbook"].find("snapshot_evidence_gate.yml") < t["playbook"].find("frozen_target_operations.yml"),
             "target writes can precede completed snapshot evidence", failures)
+    require(has(t["manifest"],
+                "Verify mandatory filesystem archives contain no symlink or hardlink members",
+                "tarfile.open", "member.issym() or member.islnk()",
+                "datev_skr04_snapshot_archive_link_audit.rc | int == 0"),
+            "snapshot finalization accepts nested symlink/hardlink archive members", failures)
 
     # Public schema binding is explicit for the complete source fingerprint.
     for table in ("defaults", "chart", "acc_trans", "ar", "ap", "gl", "customer",
@@ -174,6 +218,28 @@ def main() -> int:
                 f"fingerprint does not bind {table} to public schema", failures)
         require(re.search(rf"\bFROM\s+{table}\b", t["fingerprint"], re.IGNORECASE) is None,
                 f"fingerprint contains unqualified protected table {table}", failures)
+
+    # Target initialization is likewise bound to public,pg_catalog and rejects
+    # persistent role/database search_path overrides before any elevation.
+    require('PGOPTIONS: "-c search_path=public,pg_catalog"' in t["playbook"],
+            "native/target PostgreSQL sessions are not pinned to public,pg_catalog", failures)
+    require(has(t["role_contract"],
+                "role_search_path_overridden", "database_search_path_overrides",
+                "lower(setting) LIKE 'search_path=%'",
+                "database_search_path_overrides | int == 0"),
+            "application role search_path overrides are not rejected", failures)
+    require(has(t["helper"],
+                "required_env('PGOPTIONS')",
+                "PGOPTIONS=-c search_path=public,pg_catalog",
+                "SET search_path TO public, pg_catalog",
+                "CREATE TABLE public.datev_skr04_migration_marker",
+                "INSERT INTO public.datev_skr04_migration_marker",
+                "FROM public.defaults", "FROM public.chart",
+                "FROM public.datev_skr04_migration_marker"),
+            "native helper target DDL/verification is not pinned to public schema", failures)
+    require("FROM public.defaults d" in t["target_defaults"] and
+            "LEFT JOIN public.currencies" in t["target_defaults"],
+            "target default verification relies on ambient search_path", failures)
 
     # Existing privilege/no-destructive guarantees remain.
     require("method: trust" not in t["create"], "temporary PostgreSQL elevation uses trust", failures)
