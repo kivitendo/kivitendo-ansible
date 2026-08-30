@@ -3,36 +3,22 @@
 # Stop Apache/nginx is handled by the generic supported-frontend runtime-mask
 # path before this backend-only task file is entered. The legacy requirement
 # "Require all previously running write-capable services to remain stopped" is
-# strengthened below: every known FCGI/task backend is runtime-masked for the
-# complete target-write window regardless of earlier entry state.
+# strengthened below: both configured FCGI/task backend identities are
+# runtime-masked for the complete target-write window regardless of service_facts
+# timing or earlier entry state.
 - name: Require target backend entry state before quiescing
   ansible.builtin.assert:
     that:
       - datev_skr04_target_window_fcgi_service_name is defined
       - datev_skr04_target_window_task_service_name is defined
+      - datev_skr04_target_backend_units | length == 2
       - datev_skr04_target_window_fcgi_was_running is defined
       - datev_skr04_target_window_task_was_running is defined
     fail_msg: >-
-      Target-window backend entry state was not captured before the selected HTTP
-      frontend was stopped. Entry flags are restoration metadata only and never
-      exempt a backend from the protected-window runtime mask.
-
-- name: Re-read backend state immediately before the target-write freeze
-  ansible.builtin.service_facts:
-
-- name: Bind every installed target-window backend unit from current service state
-  ansible.builtin.set_fact:
-    datev_skr04_target_backend_units: >-
-      {{
-        (
-          ([datev_skr04_target_window_fcgi_service_name + '.service']
-           if (datev_skr04_target_window_fcgi_service_name + '.service') in ansible_facts.services
-           else []) +
-          ([datev_skr04_target_window_task_service_name + '.service']
-           if (datev_skr04_target_window_task_service_name + '.service') in ansible_facts.services
-           else [])
-        ) | unique | list
-      }}
+      Target-window backend entry state or the complete configured backend
+      identity list was not captured before the protected window. Both configured
+      backend names remain in every mask/state gate regardless of service_facts
+      timing.
 
 - name: Stop dedicated kivitendo FCGI from its current state
   ansible.builtin.debug:
@@ -48,7 +34,7 @@
       primitive below.
   changed_when: false
 
-- name: Runtime-mask every current backend for the complete target-write window
+- name: Runtime-mask both configured backends for the complete target-write window
   ansible.builtin.include_tasks: backend_runtime_quiesce.yml
   vars:
     datev_skr04_backend_units_to_mask: "{{ datev_skr04_target_backend_units }}"
