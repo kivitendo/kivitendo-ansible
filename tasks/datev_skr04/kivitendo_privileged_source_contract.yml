@@ -1,0 +1,121 @@
+---
+- name: Enumerate every tracked installed kivitendo source file from reviewed HEAD
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ kivitendo_install_dir }}"
+      - ls-tree
+      - -r
+      - --name-only
+      - HEAD
+  register: datev_skr04_installed_tracked_files
+  changed_when: false
+
+- name: Select every privileged Perl and native SQL input
+  ansible.builtin.set_fact:
+    datev_skr04_privileged_installed_inputs: >-
+      {{
+        (
+          datev_skr04_installed_tracked_files.stdout_lines
+          | select('match', '.*\\.(pm|pl)$')
+          | list
+        )
+        +
+        (
+          datev_skr04_installed_tracked_files.stdout_lines
+          | select('match', '^sql/')
+          | list
+        )
+        | unique
+        | sort
+        | list
+      }}
+
+- name: Require a non-empty reviewed privileged installed input set
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_privileged_installed_inputs | length > 50
+      - "'SL/User.pm' in datev_skr04_privileged_installed_inputs"
+      - "('sql/' ~ datev_skr04_target_coa ~ '-chart.sql') in datev_skr04_privileged_installed_inputs"
+    fail_msg: >-
+      The pinned kivitendo checkout does not expose the expected tracked Perl and
+      native SQL inputs. Refusing to execute privileged dataset initialization
+      from an incomplete or unexpected source tree.
+
+- name: Read reviewed HEAD blob for every privileged installed input
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ kivitendo_install_dir }}"
+      - rev-parse
+      - "HEAD:{{ item }}"
+  loop: "{{ datev_skr04_privileged_installed_inputs }}"
+  register: datev_skr04_privileged_head_blobs
+  changed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+- name: Hash every privileged installed working-tree input directly
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ kivitendo_install_dir }}"
+      - hash-object
+      - --
+      - "{{ item }}"
+  loop: "{{ datev_skr04_privileged_installed_inputs }}"
+  register: datev_skr04_privileged_worktree_blobs
+  changed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+- name: Reject any privileged installed input whose bytes differ from reviewed HEAD
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_privileged_head_blobs.results[item].item == datev_skr04_privileged_worktree_blobs.results[item].item
+      - datev_skr04_privileged_head_blobs.results[item].stdout == datev_skr04_privileged_worktree_blobs.results[item].stdout
+    fail_msg: >-
+      Privileged installed input {{ datev_skr04_privileged_head_blobs.results[item].item }}
+      differs byte-for-byte from the pinned kivitendo HEAD. Direct blob comparison
+      is required so assume-unchanged/skip-worktree cannot hide modified Perl or
+      native SQL executed with application or temporary-superuser credentials.
+  loop: "{{ range(0, datev_skr04_privileged_head_blobs.results | length) | list }}"
+  loop_control:
+    label: "{{ datev_skr04_privileged_head_blobs.results[item].item }}"
+
+- name: Detect untracked or ignored installed files that could alter privileged execution
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --exclude-standard]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --ignored, --exclude-standard]
+  register: datev_skr04_installed_untracked_files
+  changed_when: false
+
+- name: Reject untracked or ignored Perl/native-SQL execution inputs
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          item.stdout_lines
+          | select('match', '.*\\.(pm|pl)$')
+          | list
+          | length
+        ) == 0
+      - >-
+        (
+          item.stdout_lines
+          | select('match', '^sql/')
+          | list
+          | length
+        ) == 0
+    fail_msg: >-
+      The installed kivitendo checkout contains untracked or ignored Perl/SQL
+      content that could affect privileged native initialization. Only bytes from
+      the pinned reviewed kivitendo commit are permitted.
+  loop: "{{ datev_skr04_installed_untracked_files.results }}"
+  loop_control:
+    label: "{{ item.item | join(' ') }}"
