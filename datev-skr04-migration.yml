@@ -51,6 +51,12 @@
         - always
         - preflight
 
+    - name: Revalidate source invariants against the explicit public schema
+      ansible.builtin.include_tasks: tasks/datev_skr04/public_source_schema_contract.yml
+      tags:
+        - always
+        - preflight
+
     - name: Enforce strict installation, defaults and PostgreSQL-role invariants
       ansible.builtin.include_tasks: tasks/datev_skr04/strict_environment.yml
       tags:
@@ -194,6 +200,9 @@
             - (datev_skr04_snapshot_complete | default({})).get('backup_directory', '') == datev_skr04_snapshot_gate_directory
             - (datev_skr04_snapshot_complete | default({})).get('postgresql_system_identifier', '') == datev_skr04_bound_system_identifier
           block:
+            - name: Revalidate the reviewed orchestration checkout immediately before target operations
+              ansible.builtin.include_tasks: tasks/datev_skr04/orchestration_checkout_contract.yml
+
             - name: Revalidate the bound PostgreSQL cluster immediately before creation
               ansible.builtin.include_tasks: tasks/datev_skr04/postgresql_cluster_contract.yml
               vars:
@@ -226,6 +235,9 @@
 
             - name: Verify every configured target default
               ansible.builtin.include_tasks: tasks/datev_skr04/verify_target_defaults.yml
+
+            - name: Revalidate the reviewed orchestration checkout before auth registration
+              ansible.builtin.include_tasks: tasks/datev_skr04/orchestration_checkout_contract.yml
 
             - name: Register a quarantined non-default client without access mappings
               ansible.builtin.include_tasks: tasks/datev_skr04/register.yml
