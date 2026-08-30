@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression contract for the explicit DATEV web/frontend and backend quiesce path."""
+"""Structural regression contract for DATEV web/backend protected windows."""
 
 from __future__ import annotations
 
@@ -32,173 +32,197 @@ def main() -> int:
         "local": "datev-skr04.local.example.yml",
         "playbook": "datev-skr04-migration.yml",
         "contract": "tasks/datev_skr04/web_service_contract.yml",
-        "quiesce": "tasks/datev_skr04/web_service_quiesce.yml",
-        "quiesce_gate": "tasks/datev_skr04/web_service_quiesce_gate.yml",
-        "restore": "tasks/datev_skr04/web_service_restore.yml",
-        "restore_gate": "tasks/datev_skr04/web_service_restore_gate.yml",
+        "web_quiesce": "tasks/datev_skr04/web_service_quiesce.yml",
+        "web_boundary": "tasks/datev_skr04/web_service_quiesce_gate.yml",
+        "web_restore": "tasks/datev_skr04/web_service_restore.yml",
+        "snapshot_final": "tasks/datev_skr04/web_service_restore_gate.yml",
+        "web_final": "tasks/datev_skr04/web_service_final_gate.yml",
         "backend_quiesce": "tasks/datev_skr04/backend_runtime_quiesce.yml",
+        "backend_boundary": "tasks/datev_skr04/backend_runtime_quiesce_gate.yml",
         "backend_restore": "tasks/datev_skr04/backend_runtime_restore.yml",
+        "backend_final": "tasks/datev_skr04/backend_runtime_final_gate.yml",
         "snapshot_entry": "tasks/datev_skr04/snapshot_backend_entry.yml",
         "snapshot_quiesce": "tasks/datev_skr04/snapshot_backend_quiesce.yml",
         "snapshot_restore": "tasks/datev_skr04/snapshot_backend_restore.yml",
         "snapshot_status": "tasks/datev_skr04/snapshot_backend_restore_status.yml",
         "target_entry": "tasks/datev_skr04/target_backend_entry.yml",
-        "frozen": "tasks/datev_skr04/frozen_target_operations.yml",
         "target_quiesce": "tasks/datev_skr04/target_write_window_quiesce.yml",
         "target_restore": "tasks/datev_skr04/target_write_window_restore.yml",
+        "frozen": "tasks/datev_skr04/frozen_target_operations.yml",
         "docs": "docs/DATEV_SKR04_MIGRATION.md",
     }
 
     for path in files.values():
-        require((ROOT / path).is_file(), f"missing web/backend service contract file: {path}", failures)
-
+        require((ROOT / path).is_file(), f"missing web/backend safety file: {path}", failures)
     if failures:
         for failure in failures:
             print(f" - {failure}", file=sys.stderr)
         return 1
 
     text = {key: read(path) for key, path in files.items()}
+    for key, path in files.items():
+        if path.endswith((".yml", ".yaml")):
+            try:
+                yaml.safe_load(text[key])
+            except Exception as exc:
+                failures.append(f"invalid YAML in {path}: {exc}")
 
-    for key in (
-        "defaults", "local", "playbook", "contract", "quiesce", "quiesce_gate",
-        "restore", "restore_gate", "backend_quiesce", "backend_restore",
-        "snapshot_entry", "snapshot_quiesce", "snapshot_restore", "snapshot_status",
-        "target_entry", "frozen", "target_quiesce", "target_restore",
-    ):
-        try:
-            yaml.safe_load(text[key])
-        except Exception as exc:
-            failures.append(f"invalid YAML in {files[key]}: {exc}")
-
+    # Explicit supported frontend and safe unit-file topology.
     require("datev_skr04_web_service_name: apache2" in text["defaults"],
-            "repository-compatible Apache default is missing", failures)
+            "Apache-compatible default is missing", failures)
     require("datev_skr04_web_service_name: apache2" in text["local"],
-            "operator example does not expose the explicit web-service setting", failures)
-
+            "operator example does not expose the web frontend", failures)
     require("datev_skr04_web_service_name in ['apache2', 'nginx']" in text["contract"],
-            "web-service preflight is not restricted to reviewed frontends", failures)
+            "frontend identity is not restricted to apache2/nginx", failures)
     require("datev_skr04_web_service_unit in ansible_facts.services" in text["contract"] and
-            ".state == 'running'" in text["contract"],
-            "web-service preflight does not require the selected unit to exist and run", failures)
-    require("datev_skr04_other_web_service_unit" in text["contract"] and
+            "ansible_facts.services[datev_skr04_web_service_unit].state == 'running'" in text["contract"] and
             "ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'" in text["contract"],
-            "preflight does not reject simultaneous Apache and nginx frontends", failures)
+            "single-running-frontend contract is incomplete", failures)
 
-    allowlist_start = text["contract"].find("datev_skr04_restartable_web_enablement_states:")
-    allowlist_end = text["contract"].find("\n- name:", allowlist_start)
-    allowlist = text["contract"][allowlist_start:allowlist_end] if 0 <= allowlist_start < allowlist_end else ""
-    require(all(f"- {state}" in allowlist for state in (
-                "enabled", "enabled-runtime", "static", "indirect", "disabled", "generated")),
-            "reviewed maskable systemd state allowlist is incomplete", failures)
-    require(all(f"- {state}" not in allowlist for state in (
-                "linked", "linked-runtime", "alias", "transient", "masked", "masked-runtime")),
-            "unsupported linked/transient/masked unit state remains allowlisted", failures)
-    require("in datev_skr04_restartable_web_enablement_states" in text["contract"],
-            "preflight does not require a positively recognized maskable systemd state", failures)
+    allow_start = text["contract"].find("datev_skr04_restartable_web_enablement_states:")
+    allow_end = text["contract"].find("\n- name:", allow_start)
+    allow = text["contract"][allow_start:allow_end] if 0 <= allow_start < allow_end else ""
+    for state in ("enabled", "enabled-runtime", "static", "indirect", "disabled", "generated"):
+        require(f"- {state}" in allow, f"safe unit state missing: {state}", failures)
+    for state in ("linked", "linked-runtime", "alias", "transient", "masked", "masked-runtime"):
+        require(f"- {state}" not in allow, f"unsupported unit state allowlisted: {state}", failures)
 
-    # Every installed supported frontend is validated before the same collection
-    # is runtime-masked. This prevents a stopped alternate linked-runtime unit
-    # from aborting only after the selected frontend has already been touched.
-    require(ordered(text["quiesce"],
+    # Web quiesce validates every collected unit before mutation, tracks only
+    # successful migration-owned masks, then proves masks and stopped state.
+    require(ordered(text["web_quiesce"],
                     "Reset configured web frontend restore state for this window",
                     "Require a single supported running web frontend before quiescing",
                     "Capture enablement and mask state before applying migration runtime masks",
                     "Require every installed supported frontend to be safely runtime-maskable",
-                    "Remember that the configured web frontend must be restored",
                     "Runtime-mask and stop every installed supported web frontend",
+                    "Record only frontend runtime masks successfully added by this migration",
+                    "Require every requested frontend runtime mask command to succeed",
                     "Require every installed supported frontend to be runtime-masked",
                     "Require all supported web frontend write paths to remain quiesced"),
-            "frontends are not fully validated before any destructive runtime mask", failures)
-    require("loop: \"{{ datev_skr04_web_enablement_before_mask.results }}\"" in text["quiesce"] and
-            "in datev_skr04_restartable_web_enablement_states" in text["quiesce"],
-            "destructive boundary validates only the selected frontend instead of every collected unit", failures)
-    require("mask" in text["quiesce"] and "--runtime" in text["quiesce"] and "--now" in text["quiesce"],
-            "protected frontends are not held closed with runtime masks", failures)
-    require("Re-read runtime mask state at the protected-operation boundary" in text["quiesce_gate"] and
-            "Require runtime masks to remain active at the protected-operation boundary" in text["quiesce_gate"] and
-            "Require both supported HTTP write paths to remain stopped" in text["quiesce_gate"],
-            "protected-operation boundary does not revalidate masks and both HTTP units", failures)
+            "web quiesce validation/mask/ownership ordering is unsafe", failures)
+    require("loop: \"{{ datev_skr04_web_enablement_before_mask.results }}\"" in text["web_quiesce"] and
+            "in datev_skr04_restartable_web_enablement_states" in text["web_quiesce"],
+            "not every collected frontend is validated before masking", failures)
+    require("datev_skr04_web_masked_units" in text["web_quiesce"] and
+            "selectattr('rc', 'equalto', 0)" in text["web_quiesce"] and
+            "failed_when: false" in text["web_quiesce"],
+            "frontend mask ownership is not captured across partial failures", failures)
 
-    # Web recovery is a state machine: any unmask failure or topology violation
-    # before/after selected restore triggers a full mask --runtime --now reseal.
-    require(ordered(text["restore"],
-                    "Initialize web runtime-mask recovery state",
-                    "Remove migration-added runtime masks when backend recovery is allowed",
-                    "Record any runtime-unmask failure and require fail-closed reseal",
-                    "Re-read supported frontend state immediately after unmasking",
-                    "Require fail-closed reseal when any frontend activates before selected restore",
-                    "Attempt configured web frontend restoration only from a clean unmasked state",
-                    "Re-read supported frontend state after selected restore attempt",
-                    "Require fail-closed reseal after any post-unmask single-frontend violation",
-                    "Reseal every supported frontend after any post-unmask recovery violation",
-                    "Verify runtime masks after fail-closed reseal or retained-backend failure",
-                    "Bind successful safe configured frontend restoration"),
-            "web unmask/restore/reseal ordering is not fail-closed", failures)
-    require("datev_skr04_web_reseal_required" in text["restore"] and
-            "datev_skr04_other_web_service_unit" in text["restore"] and
-            "mask\n      - --runtime\n      - --now" in text["restore"],
-            "post-unmask topology violations do not force full runtime reseal", failures)
-    require("datev_skr04_web_runtime_unmask_ok" in text["restore_gate"] and
-            "datev_skr04_web_runtime_reseal_ok" in text["restore_gate"] and
-            "datev_skr04_other_web_service_unit" in text["restore_gate"],
-            "snapshot restore gate does not verify healthy restore or safe reseal", failures)
+    # The final protected-operation boundary is joint: frontend masks/stopped
+    # first, then backend masks/stopped in the same include chain.
+    require(ordered(text["web_boundary"],
+                    "Require runtime masks to remain active at the protected-operation boundary",
+                    "Require both supported HTTP write paths to remain stopped",
+                    "Jointly revalidate backend masks and stopped state after the frontend boundary gate"),
+            "frontend gate does not immediately chain into backend boundary validation", failures)
+    require("backend_runtime_quiesce_gate.yml" in text["web_boundary"] and
+            "datev_skr04_backend_masked_units" in text["web_boundary"],
+            "joint protected-boundary backend gate is missing", failures)
+    require("Require every backend runtime mask to remain active at the final boundary" in text["backend_boundary"] and
+            "Require every backend to remain stopped at the final protected boundary" in text["backend_boundary"],
+            "backend final protected-boundary gate is incomplete", failures)
 
-    # Shared backend primitive validates every unit, masks it for the complete
-    # window, verifies the mask and verifies stopped state. The legacy snapshot
-    # block therefore cannot transiently observe/restart a backend.
+    # Backend quiesce rejects pre-existing/unsupported masks, tracks only masks
+    # successfully added by this migration, and asserts complete coverage.
     require(ordered(text["backend_quiesce"],
+                    "Reset backend runtime-mask ownership for this protected window",
                     "Read backend unit-file states before runtime masking",
                     "Require every backend unit to be safely runtime-maskable",
                     "Runtime-mask and stop every known backend for the protected window",
-                    "Read backend runtime-mask state at the protected-operation boundary",
+                    "Record only backend runtime masks successfully added by this migration",
+                    "Require every requested backend runtime mask command to succeed",
                     "Require every backend runtime mask to be active",
                     "Require every protected backend to remain stopped"),
-            "shared backend quiesce does not hold all backends closed for the complete window", failures)
-    require("loop: \"{{ datev_skr04_backend_enablement_before_mask.results }}\"" in text["backend_quiesce"] and
-            "in datev_skr04_restartable_web_enablement_states" in text["backend_quiesce"],
-            "backend primitive does not validate every unit before masking", failures)
-    require("--runtime" in text["backend_quiesce"] and "--now" in text["backend_quiesce"],
-            "backend primitive does not use runtime mask --now", failures)
+            "backend quiesce ownership/mask ordering is unsafe", failures)
+    require("datev_skr04_backend_masked_units" in text["backend_quiesce"] and
+            "selectattr('rc', 'equalto', 0)" in text["backend_quiesce"],
+            "backend mask ownership is not captured", failures)
 
-    # Shared backend restore removes masks, starts only authoritative entry-running
-    # units, demands exact entry state (including entry-stopped), and reseals all
-    # backends after any unmask or state-recovery mismatch.
+    # Pre-web backend restoration removes only migration-owned masks from
+    # entry-running services. Entry-stopped services intentionally remain masked
+    # until the final post-web gate.
     require(ordered(text["backend_restore"],
-                    "Remove migration runtime masks from protected backends",
+                    "Initialize backend recovery state and deferred mask ownership",
+                    "Partition migration-owned backend masks by authoritative entry state",
+                    "Remove migration masks only from entry-running backends before web recovery",
                     "Attempt restoration only for backends running at authoritative window entry",
-                    "Record any backend state that differs from authoritative window entry",
-                    "Bind whether backend recovery must be resealed",
-                    "Reseal every backend after any unmask or entry-state recovery violation",
-                    "Verify backend runtime masks after fail-closed reseal",
-                    "Bind successful authoritative backend recovery"),
-            "shared backend restore is not authoritative-entry and fail-closed", failures)
-    require("item.was_running | bool" in text["backend_restore"] and
-            "not (item.was_running | bool)" in text["backend_restore"] and
-            "datev_skr04_backend_reseal_required" in text["backend_restore"],
-            "backend restore does not enforce both entry-running and entry-stopped states", failures)
+                    "Record any backend service state that differs from authoritative entry",
+                    "Verify deferred entry-stopped backend masks remain active before web restoration",
+                    "Bind whether pre-web backend recovery must be resealed",
+                    "Reseal every migration-owned backend after any pre-web recovery violation",
+                    "Bind successful pre-web authoritative backend recovery"),
+            "two-phase authoritative backend restoration is not ordered safely", failures)
+    require("loop: \"{{ datev_skr04_backend_immediate_unmask_units }}\"" in text["backend_restore"] and
+            "datev_skr04_backend_deferred_unmask_units" in text["backend_restore"] and
+            "item.unit in datev_skr04_backend_masked_units" in text["backend_restore"],
+            "backend unmasking is not constrained to migration-owned masks", failures)
+    require("loop: \"{{ datev_skr04_backend_units_to_mask }}\"" not in
+            text["backend_restore"][text["backend_restore"].find("Remove migration masks only"):text["backend_restore"].find("Attempt restoration only")],
+            "backend restore unconditionally unmasks all protected units", failures)
 
-    require("datev_skr04_snapshot_fcgi_was_running_at_entry" in text["snapshot_entry"] and
-            "datev_skr04_snapshot_task_was_running_at_entry" in text["snapshot_entry"],
-            "snapshot backend entry state is not captured for restoration", failures)
-    require(ordered(text["snapshot_quiesce"],
-                    "Re-read backend state immediately before snapshot quiescing",
-                    "Bind every installed snapshot backend unit from current service state",
-                    "Runtime-mask every current snapshot backend for the complete protected window"),
-            "snapshot backends are not bound from current state and runtime-masked", failures)
-    require("backend_runtime_quiesce.yml" in text["snapshot_quiesce"],
-            "snapshot does not use shared backend runtime-mask primitive", failures)
-    require("datev_skr04_snapshot_fcgi_was_running_at_entry | bool" not in text["snapshot_quiesce"] and
-            "datev_skr04_snapshot_task_was_running_at_entry | bool" not in text["snapshot_quiesce"],
-            "snapshot entry flags still exempt a backend from quiescing", failures)
-    require("authoritative snapshot backend restore contract" in text["snapshot_restore"] and
-            "backend_runtime_restore.yml" in text["snapshot_restore"] and
-            "datev_skr04_snapshot_fcgi_was_running_at_entry" in text["snapshot_restore"] and
-            "datev_skr04_snapshot_task_was_running_at_entry" in text["snapshot_restore"],
-            "snapshot restore is not exclusively bound to outer entry metadata", failures)
+    # Entry-stopped masks are released only after web restoration. Exact entry
+    # state is re-read; any mismatch reseals every migration-owned backend.
+    require(ordered(text["backend_final"],
+                    "Remove deferred migration masks from entry-stopped backends at the final gate",
+                    "Re-read all backend states after web restoration and deferred unmask",
+                    "Record any backend that differs from authoritative window entry at final recovery",
+                    "Bind whether final backend recovery must be fail-closed resealed",
+                    "Reseal all migration-owned backends after any final recovery violation",
+                    "Bind successful final authoritative backend recovery"),
+            "final backend recovery gate is not fail-closed", failures)
+    require("datev_skr04_backend_final_deferred_unmask_units" in text["backend_final"] and
+            "datev_skr04_backend_final_masked_units" in text["backend_final"],
+            "final backend gate is not ownership-aware", failures)
+
+    # Web recovery unmask/reseal also uses migration ownership only. Any topology
+    # violation before/after selected restore reseals owned HTTP masks.
+    require(ordered(text["web_restore"],
+                    "Remove only migration-owned runtime masks when backend recovery is allowed",
+                    "Require fail-closed reseal when any frontend activates before selected restore",
+                    "Attempt configured web frontend restoration only from a clean unmasked state",
+                    "Require fail-closed reseal after any post-unmask single-frontend violation",
+                    "Reseal every migration-owned frontend after any post-unmask recovery violation",
+                    "Bind successful safe configured frontend restoration"),
+            "web restore state machine is not fail-closed", failures)
+    require("loop: \"{{ datev_skr04_web_masked_units | default([]) }}\"" in text["web_restore"],
+            "web restore does not use migration-owned mask list", failures)
+
+    # The last recovery boundary jointly re-reads backends and frontends. Backend
+    # drift is resealed first; any backend/web violation then reseals owned HTTP
+    # masks before the enclosing assertion fails.
+    require(ordered(text["web_final"],
+                    "Re-read backend and frontend state at the joint final recovery boundary",
+                    "Record any backend that changed after the dedicated backend final gate",
+                    "Reseal migration-owned backends after any joint-final backend violation",
+                    "Bind final web topology state",
+                    "Fail-closed reseal every migration-owned frontend after any final recovery violation",
+                    "Bind final safe web recovery state"),
+            "joint final backend/web recovery gate is not fail-closed", failures)
+    require("datev_skr04_web_final_backend_restore_items" in text["web_final"] and
+            "datev_skr04_web_final_backend_masked_units" in text["web_final"] and
+            "datev_skr04_web_masked_units" in text["web_final"],
+            "joint final gate lacks backend or frontend ownership/state inputs", failures)
+
+    # Snapshot path: outer entry metadata, full-window backend masks, exact
+    # authoritative restore, then backend-final + joint-final gates.
+    require("datev_skr04_backend_masked_units: []" in text["snapshot_entry"],
+            "snapshot entry does not reset backend mask ownership", failures)
+    require("backend_runtime_quiesce.yml" in text["snapshot_quiesce"] and
+            "Runtime-mask every current snapshot backend for the complete protected window" in text["snapshot_quiesce"],
+            "snapshot backends are not runtime-masked for the whole legacy snapshot block", failures)
+    require("datev_skr04_snapshot_backend_restore_items:" in text["snapshot_restore"] and
+            text["snapshot_restore"].count("was_running:") == 2 and
+            "backend_runtime_restore.yml" in text["snapshot_restore"],
+            "snapshot restore contract does not bind both configured backend identities", failures)
     require("datev_skr04_snapshot_backend_restore_ready" in text["snapshot_status"] and
             "not (datev_skr04_snapshot_fcgi_was_running_at_entry" in text["snapshot_status"] and
             "not (datev_skr04_snapshot_task_was_running_at_entry" in text["snapshot_status"],
-            "snapshot recovery does not enforce exact outer entry state", failures)
+            "snapshot pre-web readiness does not enforce authoritative service state", failures)
+    require("backend_runtime_final_gate.yml" in text["snapshot_final"] and
+            "web_service_final_gate.yml" in text["snapshot_final"] and
+            "datev_skr04_backend_final_ready" in text["snapshot_final"] and
+            "datev_skr04_web_final_ready" in text["snapshot_final"],
+            "snapshot final recovery does not revalidate/reseal backend and web state", failures)
     require(ordered(text["playbook"],
                     "snapshot_backend_entry.yml",
                     "web_service_quiesce.yml",
@@ -209,56 +233,45 @@ def main() -> int:
                     "snapshot_backend_restore_status.yml",
                     "web_service_restore.yml",
                     "web_service_restore_gate.yml"),
-            "snapshot window ordering is not entry-bound and fail-closed", failures)
+            "snapshot protected/recovery ordering is wrong", failures)
 
-    require("datev_skr04_target_window_fcgi_was_running" in text["target_entry"] and
-            "datev_skr04_target_window_task_was_running" in text["target_entry"],
-            "target backend entry state is not captured for restoration", failures)
-    require(ordered(text["target_quiesce"],
-                    "Re-read backend state immediately before the target-write freeze",
-                    "Bind every installed target-window backend unit from current service state",
-                    "Runtime-mask every current backend for the complete target-write window",
-                    "Require all known write-capable backends to remain stopped regardless of entry state"),
-            "target backends are not current-state bound and runtime-masked through the window", failures)
+    # Target path mirrors snapshot semantics and also has an explicit post-web
+    # backend mask gate immediately before frozen source validation.
+    require("datev_skr04_backend_masked_units: []" in text["target_entry"],
+            "target entry does not reset backend mask ownership", failures)
     require("backend_runtime_quiesce.yml" in text["target_quiesce"] and
-            "datev_skr04_target_window_fcgi_was_running | bool" not in text["target_quiesce"] and
-            "datev_skr04_target_window_task_was_running | bool" not in text["target_quiesce"],
-            "target entry flags still exempt a backend from quiescing", failures)
-    require("authoritative target-window backend restore contract" in text["target_restore"] and
+            "Runtime-mask every current backend for the complete target-write window" in text["target_quiesce"],
+            "target backends are not runtime-masked for the full frozen window", failures)
+    require("backend_runtime_quiesce_gate.yml" in text["frozen"] and
+            ordered(text["frozen"], "web_service_quiesce_gate.yml", "backend_runtime_quiesce_gate.yml",
+                    "public_source_schema_contract.yml"),
+            "target backend masks are not revalidated after the frontend gate before frozen work", failures)
+    require("datev_skr04_target_backend_restore_items:" in text["target_restore"] and
+            text["target_restore"].count("was_running:") == 2 and
             "backend_runtime_restore.yml" in text["target_restore"] and
-            "datev_skr04_target_window_backends_ready" in text["target_restore"],
-            "target backend restoration is not authoritative-entry and fail-closed", failures)
+            "backend_runtime_final_gate.yml" in text["target_restore"] and
+            "web_service_final_gate.yml" in text["target_restore"],
+            "target recovery does not use authoritative two-phase/final gates", failures)
     require(ordered(text["target_restore"],
-                    "Attempt FCGI restoration after target-write window",
-                    "Attempt task-server restoration after target-write window",
                     "Restore backend runtime masks and authoritative entry states",
                     "Record whether all required backend services are restored",
                     "Attempt configured web frontend restoration only after backend recovery",
+                    "Release deferred target backend masks and revalidate authoritative entry state",
+                    "Jointly revalidate target backends and web topology at the final boundary",
                     "Fail only after all target-window restoration attempts completed"),
-            "target recovery does not restore backends before reopening HTTP", failures)
-    require(ordered(text["frozen"],
-                    "target_backend_entry.yml",
-                    "web_service_quiesce.yml",
-                    "target_write_window_quiesce.yml",
-                    "web_service_quiesce_gate.yml",
-                    "public_source_schema_contract.yml",
-                    "pre_target_source_gate.yml",
-                    "create.yml",
-                    "verify.yml",
-                    "target_write_window_restore.yml"),
-            "target-write window gates/writes/restoration are out of order", failures)
+            "target recovery ordering is wrong", failures)
 
     require("`apache2` or `nginx`" in text["docs"] and
             "datev_skr04_web_service_name: nginx" in text["docs"],
-            "runbook does not document nginx/apache frontend selection", failures)
+            "runbook does not document nginx/apache selection", failures)
 
     if failures:
-        print("SKR04 web/backend service regression checks failed:", file=sys.stderr)
+        print("SKR04 web/backend safety regression checks failed:", file=sys.stderr)
         for failure in failures:
             print(f" - {failure}", file=sys.stderr)
         return 1
 
-    print("SKR04 web/backend service regression checks passed.")
+    print("SKR04 web/backend safety regression checks passed.")
     return 0
 
 
