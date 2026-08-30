@@ -58,6 +58,89 @@
       tracked/staged modifications, or its privileged helper/fingerprint SQL/
       playbook differs from that commit. Do not execute an unreviewed checkout.
 
+- name: Enumerate every tracked migration runtime input from reviewed HEAD
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ playbook_dir }}"
+      - ls-tree
+      - -r
+      - --name-only
+      - HEAD
+      - --
+      - ansible.cfg
+      - datev-skr04-migration.yml
+      - datev-skr04-defaults.yml
+      - datev-skr04.local.example.yml
+      - vars.yml
+      - tasks/datev_skr04
+      - scripts/kivitendo-create-dataset.pl
+      - sql/datev-skr04-source-fingerprint.sql
+  register: datev_skr04_tracked_runtime_inputs
+  changed_when: false
+
+- name: Require the complete expected runtime input set to be tracked
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_tracked_runtime_inputs.stdout_lines | length >= 10
+      - "'ansible.cfg' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'datev-skr04-migration.yml' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'datev-skr04-defaults.yml' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'vars.yml' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'tasks/datev_skr04/create.yml' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'tasks/datev_skr04/register.yml' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'tasks/datev_skr04/verify.yml' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'tasks/datev_skr04/orchestration_checkout_contract.yml' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'scripts/kivitendo-create-dataset.pl' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+      - "'sql/datev-skr04-source-fingerprint.sql' in datev_skr04_tracked_runtime_inputs.stdout_lines"
+    fail_msg: >-
+      The reviewed commit does not contain the complete tracked runtime input
+      set expected by the migration. Refusing an incomplete orchestration tree.
+
+- name: Read reviewed HEAD blob for every tracked migration runtime input
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ playbook_dir }}"
+      - rev-parse
+      - "HEAD:{{ item }}"
+  loop: "{{ datev_skr04_tracked_runtime_inputs.stdout_lines }}"
+  register: datev_skr04_runtime_head_blobs
+  changed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+- name: Hash every working-tree migration runtime input directly
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ playbook_dir }}"
+      - hash-object
+      - --
+      - "{{ item }}"
+  loop: "{{ datev_skr04_tracked_runtime_inputs.stdout_lines }}"
+  register: datev_skr04_runtime_worktree_blobs
+  changed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+- name: Reject any runtime input whose working bytes differ from reviewed HEAD
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_runtime_head_blobs.results[item].item == datev_skr04_runtime_worktree_blobs.results[item].item
+      - datev_skr04_runtime_head_blobs.results[item].stdout == datev_skr04_runtime_worktree_blobs.results[item].stdout
+    fail_msg: >-
+      Runtime input {{ datev_skr04_runtime_head_blobs.results[item].item }} differs
+      byte-for-byte from reviewed HEAD. Direct blob comparison is mandatory so
+      Git index flags such as assume-unchanged or skip-worktree cannot hide a
+      modified dynamic task from this repeated root-execution gate.
+  loop: "{{ range(0, datev_skr04_runtime_head_blobs.results | length) | list }}"
+  loop_control:
+    label: "{{ datev_skr04_runtime_head_blobs.results[item].item }}"
+
 - name: Store the verified orchestration identity for pre-create revalidation
   ansible.builtin.set_fact:
     datev_skr04_verified_orchestration_commit: >-
