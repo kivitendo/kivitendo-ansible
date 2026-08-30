@@ -9,6 +9,10 @@
       Backend runtime-mask inputs are incomplete. Refusing a protected window
       without an explicit unit list and context.
 
+- name: Reset backend runtime-mask ownership for this protected window
+  ansible.builtin.set_fact:
+    datev_skr04_backend_masked_units: []
+
 - name: Read backend unit-file states before runtime masking
   ansible.builtin.command:
     argv:
@@ -28,7 +32,8 @@
       A {{ datev_skr04_backend_context }} backend reports an unsupported systemd
       unit-file state. linked, linked-runtime, alias, transient, masked,
       masked-runtime, not-found, bad, empty and unknown states are rejected
-      before any backend is stopped or masked.
+      before any backend is stopped or masked. Pre-existing masks remain
+      operator-owned and are never removed by migration recovery.
   loop: "{{ datev_skr04_backend_enablement_before_mask.results }}"
 
 - name: Runtime-mask and stop every known backend for the protected window
@@ -42,6 +47,27 @@
   loop: "{{ datev_skr04_backend_units_to_mask }}"
   register: datev_skr04_backend_runtime_mask_attempts
   changed_when: true
+  failed_when: false
+
+- name: Record only backend runtime masks successfully added by this migration
+  ansible.builtin.set_fact:
+    datev_skr04_backend_masked_units: >-
+      {{
+        datev_skr04_backend_runtime_mask_attempts.results
+        | selectattr('rc', 'defined')
+        | selectattr('rc', 'equalto', 0)
+        | map(attribute='item')
+        | list
+      }}
+
+- name: Require every requested backend runtime mask command to succeed
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backend_masked_units | length == datev_skr04_backend_units_to_mask | length
+    fail_msg: >-
+      One or more {{ datev_skr04_backend_context }} backend runtime masks failed.
+      Recovery will remove only masks recorded as successfully added by this
+      migration; operator-owned/pre-existing masks are never unmasked.
 
 - name: Read backend runtime-mask state at the protected-operation boundary
   ansible.builtin.command:
