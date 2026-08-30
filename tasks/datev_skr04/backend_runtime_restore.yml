@@ -1,0 +1,135 @@
+---
+- name: Validate backend runtime-restore inputs
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backend_units_to_mask is defined
+      - datev_skr04_backend_restore_items is defined
+      - datev_skr04_backend_context is defined
+    fail_msg: >-
+      Backend runtime-restore inputs are incomplete. Refusing to reopen the web
+      frontend without an explicit backend recovery contract.
+
+- name: Initialize backend recovery state
+  ansible.builtin.set_fact:
+    datev_skr04_backend_unmask_ok: true
+    datev_skr04_backend_expected_state_ok: true
+    datev_skr04_backend_reseal_ok: true
+
+- name: Remove migration runtime masks from protected backends
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - unmask
+      - --runtime
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_unmask_attempts
+  changed_when: true
+  failed_when: false
+
+- name: Record any backend runtime-unmask failure
+  ansible.builtin.set_fact:
+    datev_skr04_backend_unmask_ok: false
+  loop: "{{ datev_skr04_backend_unmask_attempts.results | default([]) }}"
+  when:
+    - item.rc is defined
+    - item.rc | int != 0
+
+- name: Attempt restoration only for backends running at authoritative window entry
+  ansible.builtin.service:
+    name: "{{ item.unit }}"
+    state: started
+  loop: "{{ datev_skr04_backend_restore_items }}"
+  register: datev_skr04_backend_start_attempts
+  failed_when: false
+  when:
+    - datev_skr04_backend_unmask_ok | bool
+    - item.was_running | bool
+
+- name: Re-read backend states after normal restoration attempts
+  ansible.builtin.service_facts:
+
+- name: Record any backend state that differs from authoritative window entry
+  ansible.builtin.set_fact:
+    datev_skr04_backend_expected_state_ok: false
+  loop: "{{ datev_skr04_backend_restore_items }}"
+  when: >-
+    (
+      (item.was_running | bool) and
+      ansible_facts.services.get(item.unit, {}).get('state', '') != 'running'
+    ) or
+    (
+      not (item.was_running | bool) and
+      ansible_facts.services.get(item.unit, {}).get('state', '') == 'running'
+    )
+
+- name: Bind whether backend recovery must be resealed
+  ansible.builtin.set_fact:
+    datev_skr04_backend_reseal_required: >-
+      {{
+        not (datev_skr04_backend_unmask_ok | bool) or
+        not (datev_skr04_backend_expected_state_ok | bool)
+      }}
+
+- name: Reseal every backend after any unmask or entry-state recovery violation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - mask
+      - --runtime
+      - --now
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_reseal_attempts
+  changed_when: true
+  failed_when: false
+  when: datev_skr04_backend_reseal_required | bool
+
+- name: Record any backend reseal command failure
+  ansible.builtin.set_fact:
+    datev_skr04_backend_reseal_ok: false
+  loop: "{{ datev_skr04_backend_reseal_attempts.results | default([]) }}"
+  when:
+    - item.rc is defined
+    - item.rc | int != 0
+
+- name: Verify backend runtime masks after fail-closed reseal
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_reseal_verification
+  changed_when: false
+  failed_when: false
+  when: datev_skr04_backend_reseal_required | bool
+
+- name: Record any incomplete backend runtime reseal
+  ansible.builtin.set_fact:
+    datev_skr04_backend_reseal_ok: false
+  loop: "{{ datev_skr04_backend_reseal_verification.results | default([]) }}"
+  when:
+    - item.stdout is defined
+    - (item.stdout | trim) not in ['masked', 'masked-runtime']
+
+- name: Re-read backend states after fail-closed reseal
+  ansible.builtin.service_facts:
+  when: datev_skr04_backend_reseal_required | bool
+
+- name: Record any running backend after fail-closed reseal
+  ansible.builtin.set_fact:
+    datev_skr04_backend_reseal_ok: false
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  when:
+    - datev_skr04_backend_reseal_required | bool
+    - ansible_facts.services.get(item, {}).get('state', '') == 'running'
+
+- name: Bind successful authoritative backend recovery
+  ansible.builtin.set_fact:
+    datev_skr04_backend_restore_ready: >-
+      {{
+        (datev_skr04_backend_unmask_ok | bool) and
+        (datev_skr04_backend_expected_state_ok | bool) and
+        not (datev_skr04_backend_reseal_required | bool)
+      }}
