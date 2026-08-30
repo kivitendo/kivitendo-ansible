@@ -4,6 +4,7 @@
 
 - name: Bind backend entry state for snapshot restoration
   ansible.builtin.set_fact:
+    datev_skr04_backend_masked_units: []
     datev_skr04_snapshot_fcgi_service_name: >-
       {{ kivitendo_fcgi_service_name | default('kivitendo-fcgi') }}
     datev_skr04_snapshot_task_service_name: >-
