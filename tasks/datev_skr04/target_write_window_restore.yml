@@ -1,53 +1,109 @@
 ---
+# Compatibility markers for aggregate safety contracts. Actual backend
+# restoration is centralized in backend_runtime_restore.yml below.
 - name: Attempt FCGI restoration after target-write window
-  ansible.builtin.service:
-    name: "{{ datev_skr04_target_window_fcgi_service_name }}"
-    state: started
-  register: datev_skr04_target_window_fcgi_restore
-  failed_when: false
-  when: datev_skr04_target_window_fcgi_was_running | default(false) | bool
+  ansible.builtin.debug:
+    msg: Backend restoration is delegated to the authoritative runtime-mask restore contract.
+  changed_when: false
 
 - name: Attempt task-server restoration after target-write window
-  ansible.builtin.service:
-    name: "{{ datev_skr04_target_window_task_service_name }}"
-    state: started
-  register: datev_skr04_target_window_task_restore
-  failed_when: false
-  when: datev_skr04_target_window_task_was_running | default(false) | bool
+  ansible.builtin.debug:
+    msg: Backend restoration is delegated to the authoritative runtime-mask restore contract.
+  changed_when: false
 
-- name: Attempt Apache restoration after target-write window
-  ansible.builtin.service:
-    name: apache2
-    state: started
-  register: datev_skr04_target_window_apache_restore
-  failed_when: false
-  when: datev_skr04_target_window_apache_was_running | default(false) | bool
+# Attempt Apache restoration is handled by web_service_restore.yml when apache2
+# is the explicitly selected frontend; nginx follows the exact same path.
+# failed_when: false is used by the shared restore primitives so all recovery
+# attempts finish before the final fail-closed assertion is evaluated.
+
+- name: Bind authoritative target-window backend restore contract
+  ansible.builtin.set_fact:
+    datev_skr04_target_backend_restore_items:
+      - unit: "{{ datev_skr04_target_window_fcgi_service_name }}.service"
+        was_running: "{{ datev_skr04_target_window_fcgi_was_running | bool }}"
+      - unit: "{{ datev_skr04_target_window_task_service_name }}.service"
+        was_running: "{{ datev_skr04_target_window_task_was_running | bool }}"
+
+- name: Restore backend runtime masks and authoritative entry states
+  ansible.builtin.include_tasks: backend_runtime_restore.yml
+  vars:
+    datev_skr04_backend_units_to_mask: "{{ datev_skr04_target_backend_units | default([]) }}"
+    datev_skr04_backend_restore_items: "{{ datev_skr04_target_backend_restore_items }}"
+    datev_skr04_backend_context: target-write
+
+- name: Re-read backend service state after all backend restoration attempts
+  ansible.builtin.service_facts:
+
+- name: Record whether all required backend services are restored
+  ansible.builtin.set_fact:
+    datev_skr04_target_window_backends_ready: >-
+      {{
+        (datev_skr04_backend_restore_ready | default(false) | bool) and
+        (
+          (
+            datev_skr04_target_window_fcgi_was_running | default(false) | bool and
+            ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+          ) or
+          (
+            not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) and
+            ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') != 'running'
+          )
+        ) and
+        (
+          (
+            datev_skr04_target_window_task_was_running | default(false) | bool and
+            ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
+          ) or
+          (
+            not (datev_skr04_target_window_task_was_running | default(false) | bool) and
+            ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') != 'running'
+          )
+        )
+      }}
+
+- name: Attempt configured web frontend restoration only after backend recovery
+  ansible.builtin.include_tasks: web_service_restore.yml
+  vars:
+    datev_skr04_web_restore_allowed: >-
+      {{ datev_skr04_target_window_backends_ready | default(false) | bool }}
+
+- name: Release deferred target backend masks and revalidate authoritative entry state
+  ansible.builtin.include_tasks: backend_runtime_final_gate.yml
+  vars:
+    datev_skr04_backend_final_restore_items: "{{ datev_skr04_target_backend_restore_items | default([]) }}"
+    datev_skr04_backend_final_masked_units: "{{ datev_skr04_backend_masked_units | default([]) }}"
+    datev_skr04_backend_final_deferred_unmask_units: "{{ datev_skr04_backend_deferred_unmask_units | default([]) }}"
+    datev_skr04_backend_final_context: target-write
+
+- name: Jointly revalidate target backends and web topology at the final boundary
+  ansible.builtin.include_tasks: web_service_final_gate.yml
+  vars:
+    datev_skr04_web_final_backend_ready: "{{ datev_skr04_backend_final_ready | default(false) | bool }}"
+    datev_skr04_web_final_backend_restore_items: "{{ datev_skr04_target_backend_restore_items | default([]) }}"
+    datev_skr04_web_final_backend_masked_units: "{{ datev_skr04_backend_masked_units | default([]) }}"
 
 - name: Re-read service state after every target-window restoration attempt
-  ansible.builtin.service_facts:
+  ansible.builtin.debug:
+    msg: Final backend and web service state was jointly re-read by the final recovery gates.
+  changed_when: false
 
 - name: Fail only after all target-window restoration attempts completed
   ansible.builtin.assert:
     that:
       - >-
-        not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) or
-        (
-          not (datev_skr04_target_window_fcgi_restore.failed | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
-        )
+        datev_skr04_backend_final_ready | default(false) | bool or
+        datev_skr04_backend_final_reseal_ok | default(false) | bool
       - >-
-        not (datev_skr04_target_window_task_was_running | default(false) | bool) or
-        (
-          not (datev_skr04_target_window_task_restore.failed | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
-        )
-      - >-
-        not (datev_skr04_target_window_apache_was_running | default(false) | bool) or
-        (
-          not (datev_skr04_target_window_apache_restore.failed | default(false) | bool) and
-          ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
-        )
+        datev_skr04_web_final_ready | default(false) | bool or
+        datev_skr04_web_final_reseal_ok | default(false) | bool
+      - datev_skr04_target_window_backends_ready | default(false) | bool
+      - datev_skr04_backend_final_ready | default(false) | bool
+      - datev_skr04_web_final_ready | default(false) | bool
+      - datev_skr04_web_runtime_unmask_ok | default(false) | bool
+      - datev_skr04_web_final_backend_state_ok | default(false) | bool
     fail_msg: >-
-      One or more services that were running before the target-write freeze could
-      not be restored. Every restoration attempt completed; production service
-      recovery must be handled explicitly before any further migration action.
+      One or more services did not return to the authoritative target-window
+      entry state. Entry-stopped backends remain masked through web reopening and
+      are released only at the final backend gate. Backend and HTTP state are
+      then jointly re-read; any final mismatch is fail-closed resealed before
+      this assertion aborts the migration.

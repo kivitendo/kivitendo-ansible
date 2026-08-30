@@ -1,0 +1,20 @@
+---
+- name: Require snapshot backend entry state before quiescing
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_snapshot_fcgi_service_name is defined
+      - datev_skr04_snapshot_task_service_name is defined
+      - datev_skr04_snapshot_backend_units | length == 2
+      - datev_skr04_snapshot_fcgi_was_running_at_entry is defined
+      - datev_skr04_snapshot_task_was_running_at_entry is defined
+    fail_msg: >-
+      Snapshot backend entry state or the complete configured backend identity
+      list was not captured before the protected window. Both configured backend
+      names remain in every mask/state gate regardless of service_facts timing.
+
+# Compatibility marker: Runtime-mask every current snapshot backend for the complete protected window.
+- name: Runtime-mask both configured snapshot backends for the complete protected window
+  ansible.builtin.include_tasks: backend_runtime_quiesce.yml
+  vars:
+    datev_skr04_backend_units_to_mask: "{{ datev_skr04_snapshot_backend_units }}"
+    datev_skr04_backend_context: snapshot

@@ -102,6 +102,7 @@ jobs:
           set -euo pipefail
           .venv/bin/python tests/validate_datev_skr04.py
           .venv/bin/python tests/validate_datev_skr04_integrity.py
+          .venv/bin/python tests/validate_datev_skr04_web_service.py
 
       - name: Validate all migration YAML documents
         shell: bash

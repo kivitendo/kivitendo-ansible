@@ -1,0 +1,52 @@
+---
+- name: Validate the explicitly configured kivitendo web service
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_web_service_name in ['apache2', 'nginx']
+    fail_msg: >-
+      datev_skr04_web_service_name must explicitly identify the write-capable
+      kivitendo HTTP frontend. Supported values are apache2 and nginx.
+
+- name: Read service state for the supported kivitendo web frontends
+  ansible.builtin.service_facts:
+
+- name: Bind the selected and alternate supported web frontend units
+  ansible.builtin.set_fact:
+    datev_skr04_web_service_unit: "{{ datev_skr04_web_service_name }}.service"
+    datev_skr04_other_web_service_name: >-
+      {{ 'nginx' if datev_skr04_web_service_name == 'apache2' else 'apache2' }}
+    datev_skr04_other_web_service_unit: >-
+      {{ ('nginx' if datev_skr04_web_service_name == 'apache2' else 'apache2') + '.service' }}
+    datev_skr04_restartable_web_enablement_states:
+      - enabled
+      - enabled-runtime
+      - static
+      - indirect
+      - disabled
+      - generated
+
+- name: Read selected web frontend enablement and mask state
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ datev_skr04_web_service_unit }}"
+  register: datev_skr04_selected_web_enablement
+  changed_when: false
+  failed_when: false
+
+- name: Require exactly one supported running and safely maskable kivitendo web frontend
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_web_service_unit in ansible_facts.services
+      - ansible_facts.services[datev_skr04_web_service_unit].state == 'running'
+      - (datev_skr04_selected_web_enablement.stdout | trim) in datev_skr04_restartable_web_enablement_states
+      - >-
+        datev_skr04_other_web_service_unit not in ansible_facts.services or
+        ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
+    fail_msg: >-
+      The configured kivitendo web frontend must exist, be running and report a
+      reviewed systemd unit-file state that can be runtime-masked and restored.
+      linked, linked-runtime, alias, transient, masked, masked-runtime, not-found,
+      bad, empty and unknown states are rejected. The other supported frontend
+      must not be running.

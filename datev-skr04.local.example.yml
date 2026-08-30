@@ -17,6 +17,10 @@ datev_skr04_source_db: replace-with-existing-skr03-database
 datev_skr04_target_db: replace-with-new-skr04-database
 datev_skr04_target_client_name: Replace with new SKR04 client name
 
+# The write-capable HTTP frontend that serves kivitendo. Supported values:
+# apache2 or nginx. The service must exist and be running during preflight.
+datev_skr04_web_service_name: apache2
+
 datev_skr04_consultant_number: ""
 datev_skr04_client_number: ""
 # Optional until a DATEV-compatible five-digit debtor number has been agreed.

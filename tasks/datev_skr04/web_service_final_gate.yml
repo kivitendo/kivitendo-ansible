@@ -1,0 +1,170 @@
+---
+- name: Validate joint final recovery inputs
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_web_final_backend_restore_items is defined
+      - datev_skr04_web_final_backend_masked_units is defined
+      - datev_skr04_web_masked_units is defined
+    fail_msg: >-
+      Final web recovery is not bound to authoritative backend state and mask
+      ownership. Refusing an assertion-only final gate.
+
+- name: Re-read backend and frontend state at the joint final recovery boundary
+  ansible.builtin.service_facts:
+
+- name: Initialize joint final backend state
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_backend_state_ok: true
+    datev_skr04_web_final_backend_reseal_ok: true
+
+- name: Record any backend that changed after the dedicated backend final gate
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_backend_state_ok: false
+  loop: "{{ datev_skr04_web_final_backend_restore_items }}"
+  when: >-
+    (
+      (item.was_running | bool) and
+      ansible_facts.services.get(item.unit, {}).get('state', '') != 'running'
+    ) or
+    (
+      not (item.was_running | bool) and
+      ansible_facts.services.get(item.unit, {}).get('state', '') == 'running'
+    )
+
+- name: Reseal migration-owned backends after any joint-final backend violation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - mask
+      - --runtime
+      - --now
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_final_backend_masked_units }}"
+  register: datev_skr04_web_final_backend_reseal_attempts
+  changed_when: true
+  failed_when: false
+  when: not (datev_skr04_web_final_backend_state_ok | bool)
+
+- name: Record any joint-final backend reseal command failure
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_backend_reseal_ok: false
+  loop: "{{ datev_skr04_web_final_backend_reseal_attempts.results | default([]) }}"
+  when:
+    - item.rc is defined
+    - item.rc | int != 0
+
+- name: Verify backend masks after joint-final fail-closed reseal
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_final_backend_masked_units }}"
+  register: datev_skr04_web_final_backend_reseal_verification
+  changed_when: false
+  failed_when: false
+  when: not (datev_skr04_web_final_backend_state_ok | bool)
+
+- name: Record incomplete joint-final backend mask reseal
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_backend_reseal_ok: false
+  loop: "{{ datev_skr04_web_final_backend_reseal_verification.results | default([]) }}"
+  when:
+    - item.stdout is defined
+    - (item.stdout | trim) not in ['masked', 'masked-runtime']
+
+- name: Re-read service state after joint-final backend reseal
+  ansible.builtin.service_facts:
+  when: not (datev_skr04_web_final_backend_state_ok | bool)
+
+- name: Record any backend still running after joint-final reseal
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_backend_reseal_ok: false
+  loop: "{{ datev_skr04_web_final_backend_masked_units }}"
+  when:
+    - not (datev_skr04_web_final_backend_state_ok | bool)
+    - ansible_facts.services.get(item, {}).get('state', '') == 'running'
+
+- name: Bind final web topology state
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_topology_ok: >-
+      {{
+        (datev_skr04_web_final_backend_ready | default(false) | bool) and
+        (datev_skr04_web_final_backend_state_ok | bool) and
+        (datev_skr04_web_restore_allowed | default(true) | bool) and
+        (
+          not (datev_skr04_web_service_was_running | default(false) | bool) or
+          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
+        ) and
+        (
+          datev_skr04_other_web_service_unit not in ansible_facts.services or
+          ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
+        )
+      }}
+    datev_skr04_web_final_reseal_ok: true
+
+- name: Fail-closed reseal every migration-owned frontend after any final recovery violation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - mask
+      - --runtime
+      - --now
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_masked_units | default([]) }}"
+  register: datev_skr04_web_final_reseal_attempts
+  changed_when: true
+  failed_when: false
+  when:
+    - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - not (datev_skr04_web_final_topology_ok | bool)
+
+- name: Record any final web reseal command failure
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_reseal_ok: false
+  loop: "{{ datev_skr04_web_final_reseal_attempts.results | default([]) }}"
+  when:
+    - item.rc is defined
+    - item.rc | int != 0
+
+- name: Verify final migration-owned frontend runtime masks after fail-closed reseal
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_masked_units | default([]) }}"
+  register: datev_skr04_web_final_reseal_verification
+  changed_when: false
+  failed_when: false
+  when:
+    - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - not (datev_skr04_web_final_topology_ok | bool)
+
+- name: Record incomplete final frontend runtime reseal
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_reseal_ok: false
+  loop: "{{ datev_skr04_web_final_reseal_verification.results | default([]) }}"
+  when:
+    - item.stdout is defined
+    - (item.stdout | trim) not in ['masked', 'masked-runtime']
+
+- name: Re-read supported frontend state after final fail-closed reseal
+  ansible.builtin.service_facts:
+  when:
+    - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - not (datev_skr04_web_final_topology_ok | bool)
+
+- name: Record any migration-owned frontend still running after final fail-closed reseal
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_reseal_ok: false
+  loop: "{{ datev_skr04_web_masked_units | default([]) }}"
+  when:
+    - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - not (datev_skr04_web_final_topology_ok | bool)
+    - ansible_facts.services.get(item, {}).get('state', '') == 'running'
+
+- name: Bind final safe web recovery state
+  ansible.builtin.set_fact:
+    datev_skr04_web_final_ready: >-
+      {{ datev_skr04_web_final_topology_ok | bool }}

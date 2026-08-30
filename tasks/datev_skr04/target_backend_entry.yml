@@ -1,0 +1,27 @@
+---
+- name: Read backend service state before the target-write web freeze
+  ansible.builtin.service_facts:
+
+- name: Bind target-window backend entry state before stopping the frontend
+  ansible.builtin.set_fact:
+    datev_skr04_backend_masked_units: []
+    datev_skr04_target_window_fcgi_service_name: >-
+      {{ kivitendo_fcgi_service_name | default('kivitendo-fcgi') }}
+    datev_skr04_target_window_task_service_name: >-
+      {{ kivitendo_task_server_service_name | default('kivitendo-task-server') }}
+    datev_skr04_target_backend_units:
+      - "{{ (kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service' }}"
+      - "{{ (kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service' }}"
+    datev_skr04_backend_boundary_units:
+      - "{{ (kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service' }}"
+      - "{{ (kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service' }}"
+    datev_skr04_target_window_fcgi_was_running: >-
+      {{ ansible_facts.services.get((kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service', {}).get('state', '') == 'running' }}
+    datev_skr04_target_window_task_was_running: >-
+      {{ ansible_facts.services.get((kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service', {}).get('state', '') == 'running' }}
+
+- name: Validate both configured target backends before frontend mutation
+  ansible.builtin.include_tasks: backend_runtime_contract.yml
+  vars:
+    datev_skr04_backend_contract_units: "{{ datev_skr04_target_backend_units }}"
+    datev_skr04_backend_contract_context: target-write

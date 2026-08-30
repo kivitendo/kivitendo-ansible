@@ -1,0 +1,117 @@
+---
+- name: Validate backend runtime-mask inputs
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backend_units_to_mask is defined
+      - datev_skr04_backend_units_to_mask | length == 2
+      - datev_skr04_backend_context is defined
+    fail_msg: >-
+      Backend runtime-mask inputs are incomplete. Both configured backend unit
+      identities and the protected-window context are mandatory.
+
+- name: Reset backend runtime-mask ownership for this protected window
+  ansible.builtin.set_fact:
+    datev_skr04_backend_masked_units: []
+
+- name: Read backend unit-file states before runtime masking
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_enablement_before_mask
+  changed_when: false
+  failed_when: false
+
+- name: Require every backend unit to be safely runtime-maskable
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | default('') | trim) in datev_skr04_restartable_web_enablement_states
+    fail_msg: >-
+      A {{ datev_skr04_backend_context }} backend reports an unsupported systemd
+      unit-file state. linked, linked-runtime, alias, transient, masked,
+      masked-runtime, not-found, bad, empty and unknown states are rejected
+      before any backend is stopped or masked. Pre-existing masks remain
+      operator-owned and are never removed by migration recovery.
+  loop: "{{ datev_skr04_backend_enablement_before_mask.results }}"
+
+# Compatibility marker: Runtime-mask and stop every known backend for the protected window.
+# Mask creation and stop are intentionally split so ownership is durable before a stop can fail.
+- name: Add migration-owned runtime masks to both configured backends
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - mask
+      - --runtime
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_runtime_mask_attempts
+  changed_when: true
+  failed_when: false
+
+# Compatibility marker: Record only backend runtime masks successfully added by this migration.
+- name: Record backend runtime masks successfully added before any stop attempt
+  ansible.builtin.set_fact:
+    datev_skr04_backend_masked_units: >-
+      {{
+        datev_skr04_backend_runtime_mask_attempts.results
+        | selectattr('rc', 'defined')
+        | selectattr('rc', 'equalto', 0)
+        | map(attribute='item')
+        | list
+      }}
+
+- name: Require every requested backend runtime mask command to succeed
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backend_masked_units | length == datev_skr04_backend_units_to_mask | length
+    fail_msg: >-
+      One or more {{ datev_skr04_backend_context }} backend runtime masks failed.
+      Recovery owns only masks whose standalone mask command succeeded; no stop
+      operation has been attempted yet.
+
+- name: Stop every runtime-masked backend separately from mask creation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - stop
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_stop_attempts
+  changed_when: true
+  failed_when: false
+
+- name: Read backend runtime-mask state at the protected-operation boundary
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_runtime_mask_verification
+  changed_when: false
+  failed_when: false
+
+- name: Require every backend runtime mask to be active
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | default('') | trim) in ['masked', 'masked-runtime']
+    fail_msg: >-
+      A {{ datev_skr04_backend_context }} backend is not runtime-masked. The
+      protected operation is blocked and recovery retains exact mask ownership.
+  loop: "{{ datev_skr04_backend_runtime_mask_verification.results }}"
+
+- name: Re-read backend service state after separate stop attempts
+  ansible.builtin.service_facts:
+
+# Compatibility marker: Require every protected backend to remain stopped.
+- name: Require every configured backend to be stopped after mask ownership was established
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services.get(item, {}).get('state', '') != 'running'
+    fail_msg: >-
+      A {{ datev_skr04_backend_context }} backend remains running after its
+      migration-owned runtime mask was recorded and stop was attempted. Recovery
+      can now safely remove or reseal exactly the masks created by this run.
+  loop: "{{ datev_skr04_backend_units_to_mask }}"

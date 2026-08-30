@@ -19,6 +19,12 @@ datev_skr04_db_port: "{{ kivitendo_db_port }}"
 datev_skr04_db_user: "{{ kivitendo_db_user }}"
 datev_skr04_db_password: "{{ kivitendo_db_password }}"
 
+# Explicit write-capable HTTP frontend that must be quiesced together with the
+# kivitendo FCGI and task-server services. Supported values are apache2 and
+# nginx. Keep apache2 as the repository-compatible default; production systems
+# using nginx must override this in the protected local operator file.
+datev_skr04_web_service_name: apache2
+
 datev_skr04_expected_source_coa: Germany-DATEV-SKR03EU
 datev_skr04_target_coa: Germany-DATEV-SKR04EU
 datev_skr04_expected_source_fingerprint: ""

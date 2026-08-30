@@ -1,0 +1,33 @@
+---
+- name: Re-read backend runtime masks at the final protected boundary
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_gate }}"
+  register: datev_skr04_backend_boundary_mask_verification
+  changed_when: false
+  failed_when: false
+
+- name: Require every backend runtime mask to remain active at the final boundary
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | default('') | trim) in ['masked', 'masked-runtime']
+    fail_msg: >-
+      A {{ datev_skr04_backend_gate_context }} backend lost its runtime mask after
+      the frontend boundary check. The protected operation is blocked before any
+      snapshot/source validation/target write can occur.
+  loop: "{{ datev_skr04_backend_boundary_mask_verification.results }}"
+
+- name: Re-read backend service state at the final protected boundary
+  ansible.builtin.service_facts:
+
+- name: Require every backend to remain stopped at the final protected boundary
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services.get(item, {}).get('state', '') != 'running'
+    fail_msg: >-
+      A {{ datev_skr04_backend_gate_context }} backend is running after the
+      frontend boundary check. The protected operation is blocked immediately.
+  loop: "{{ datev_skr04_backend_units_to_gate }}"
