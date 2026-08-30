@@ -6,12 +6,31 @@
   serial: 1
   any_errors_fatal: true
 
+  # Perl reads PERL5OPT/PERL5LIB before a script's BEGIN block. Clear every
+  # startup/search-path customization at play scope so the privileged native
+  # helper can only load code from its explicitly constructed @INC.
+  environment:
+    PERL5OPT: ""
+    PERL5LIB: ""
+    PERLLIB: ""
+    PERL5DB: ""
+    PERL_LOCAL_LIB_ROOT: ""
+    PERL_MB_OPT: ""
+    PERL_MM_OPT: ""
+    PERL_USE_UNSAFE_INC: "0"
+
   vars_files:
     - vars.yml
     - datev-skr04-defaults.yml
     - [datev-skr04.local.yml, datev-skr04.local.example.yml]
 
   tasks:
+    - name: Bind execution to the explicitly reviewed orchestration checkout
+      ansible.builtin.include_tasks: tasks/datev_skr04/orchestration_checkout_contract.yml
+      tags:
+        - always
+        - preflight
+
     - name: Bind the live filesystem document store to mandatory recovery evidence
       ansible.builtin.include_tasks: tasks/datev_skr04/document_store_contract.yml
       tags:
@@ -34,6 +53,12 @@
 
     - name: Enforce strict installation, defaults and PostgreSQL-role invariants
       ansible.builtin.include_tasks: tasks/datev_skr04/strict_environment.yml
+      tags:
+        - always
+        - preflight
+
+    - name: Enforce the isolated PostgreSQL application-role membership contract
+      ansible.builtin.include_tasks: tasks/datev_skr04/application_role_contract.yml
       tags:
         - always
         - preflight
@@ -187,6 +212,9 @@
             - name: Revalidate all live creation inputs after snapshotting
               ansible.builtin.include_tasks: tasks/datev_skr04/pre_create_integrity.yml
 
+            - name: Revalidate the application-role membership graph before elevation
+              ansible.builtin.include_tasks: tasks/datev_skr04/application_role_contract.yml
+
             - name: Initialize the isolated SKR04 database with guaranteed privilege cleanup
               block:
                 - name: Run the native isolated SKR04 initializer
@@ -204,6 +232,9 @@
 
             - name: Prove target correctness, quarantine and source immutability
               ansible.builtin.include_tasks: tasks/datev_skr04/verify.yml
+
+            - name: Revalidate the application-role membership graph after target operations
+              ansible.builtin.include_tasks: tasks/datev_skr04/application_role_contract.yml
 
       rescue:
         - name: Report the preserved failed apply state
@@ -234,8 +265,10 @@
           - (datev_skr04_target_defaults_verification | default({})).get('target_database', '') == datev_skr04_target_db
           - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'pre_create'
           - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_bound_system_identifier
+          - datev_skr04_application_role_contract_state.query_result | length == 1
+          - datev_skr04_application_role_contract_state.query_result[0].members_that_can_assume_application | int == 0
         fail_msg: >-
-          Apply mode did not complete target, complete-default, cluster and
+          Apply mode did not complete target, complete-default, cluster, role and
           evidence verification. No access, master-data migration or production
           cutover is allowed.
       when: datev_skr04_mode == 'apply'
@@ -243,8 +276,9 @@
     - name: Confirm that preflight made no changes
       ansible.builtin.debug:
         msg: >-
-          Read-only preflight complete. The document store and socket/TCP
-          PostgreSQL cluster binding were verified. No target or staging
-          database, auth client, posting, customer, invoice, default-client or
-          task-server change was made.
+          Read-only preflight complete. The reviewed orchestration checkout,
+          document store, PostgreSQL application-role graph and socket/TCP
+          cluster binding were verified. No target or staging database, auth
+          client, posting, customer, invoice, default-client or task-server
+          change was made.
       when: datev_skr04_mode == 'preflight'
