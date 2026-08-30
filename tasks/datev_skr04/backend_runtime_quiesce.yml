@@ -1,0 +1,77 @@
+---
+- name: Validate backend runtime-mask inputs
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_backend_units_to_mask is defined
+      - datev_skr04_backend_units_to_mask is iterable
+      - datev_skr04_backend_context is defined
+    fail_msg: >-
+      Backend runtime-mask inputs are incomplete. Refusing a protected window
+      without an explicit unit list and context.
+
+- name: Read backend unit-file states before runtime masking
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_enablement_before_mask
+  changed_when: false
+  failed_when: false
+
+- name: Require every backend unit to be safely runtime-maskable
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | default('') | trim) in datev_skr04_restartable_web_enablement_states
+    fail_msg: >-
+      A {{ datev_skr04_backend_context }} backend reports an unsupported systemd
+      unit-file state. linked, linked-runtime, alias, transient, masked,
+      masked-runtime, not-found, bad, empty and unknown states are rejected
+      before any backend is stopped or masked.
+  loop: "{{ datev_skr04_backend_enablement_before_mask.results }}"
+
+- name: Runtime-mask and stop every known backend for the protected window
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - mask
+      - --runtime
+      - --now
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_runtime_mask_attempts
+  changed_when: true
+
+- name: Read backend runtime-mask state at the protected-operation boundary
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_runtime_mask_verification
+  changed_when: false
+  failed_when: false
+
+- name: Require every backend runtime mask to be active
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | default('') | trim) in ['masked', 'masked-runtime']
+    fail_msg: >-
+      A {{ datev_skr04_backend_context }} backend is not runtime-masked at the
+      protected-operation boundary. The migration cannot prove that the backend
+      will remain stopped throughout the window.
+  loop: "{{ datev_skr04_backend_runtime_mask_verification.results }}"
+
+- name: Re-read backend service state after runtime masking
+  ansible.builtin.service_facts:
+
+- name: Require every protected backend to remain stopped
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services.get(item, {}).get('state', '') != 'running'
+    fail_msg: >-
+      A {{ datev_skr04_backend_context }} backend remains running after runtime
+      masking. No protected operation may continue.
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
