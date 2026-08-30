@@ -3,11 +3,11 @@
   ansible.builtin.assert:
     that:
       - datev_skr04_backend_units_to_mask is defined
-      - datev_skr04_backend_units_to_mask is iterable
+      - datev_skr04_backend_units_to_mask | length == 2
       - datev_skr04_backend_context is defined
     fail_msg: >-
-      Backend runtime-mask inputs are incomplete. Refusing a protected window
-      without an explicit unit list and context.
+      Backend runtime-mask inputs are incomplete. Both configured backend unit
+      identities and the protected-window context are mandatory.
 
 - name: Reset backend runtime-mask ownership for this protected window
   ansible.builtin.set_fact:
@@ -36,20 +36,19 @@
       operator-owned and are never removed by migration recovery.
   loop: "{{ datev_skr04_backend_enablement_before_mask.results }}"
 
-- name: Runtime-mask and stop every known backend for the protected window
+- name: Add migration-owned runtime masks to both configured backends
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - mask
       - --runtime
-      - --now
       - "{{ item }}"
   loop: "{{ datev_skr04_backend_units_to_mask }}"
   register: datev_skr04_backend_runtime_mask_attempts
   changed_when: true
   failed_when: false
 
-- name: Record only backend runtime masks successfully added by this migration
+- name: Record backend runtime masks successfully added before any stop attempt
   ansible.builtin.set_fact:
     datev_skr04_backend_masked_units: >-
       {{
@@ -66,8 +65,19 @@
       - datev_skr04_backend_masked_units | length == datev_skr04_backend_units_to_mask | length
     fail_msg: >-
       One or more {{ datev_skr04_backend_context }} backend runtime masks failed.
-      Recovery will remove only masks recorded as successfully added by this
-      migration; operator-owned/pre-existing masks are never unmasked.
+      Recovery owns only masks whose standalone mask command succeeded; no stop
+      operation has been attempted yet.
+
+- name: Stop every runtime-masked backend separately from mask creation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - stop
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_units_to_mask }}"
+  register: datev_skr04_backend_stop_attempts
+  changed_when: true
+  failed_when: false
 
 - name: Read backend runtime-mask state at the protected-operation boundary
   ansible.builtin.command:
@@ -85,19 +95,19 @@
     that:
       - (item.stdout | default('') | trim) in ['masked', 'masked-runtime']
     fail_msg: >-
-      A {{ datev_skr04_backend_context }} backend is not runtime-masked at the
-      protected-operation boundary. The migration cannot prove that the backend
-      will remain stopped throughout the window.
+      A {{ datev_skr04_backend_context }} backend is not runtime-masked. The
+      protected operation is blocked and recovery retains exact mask ownership.
   loop: "{{ datev_skr04_backend_runtime_mask_verification.results }}"
 
-- name: Re-read backend service state after runtime masking
+- name: Re-read backend service state after separate stop attempts
   ansible.builtin.service_facts:
 
-- name: Require every protected backend to remain stopped
+- name: Require every configured backend to be stopped after mask ownership was established
   ansible.builtin.assert:
     that:
       - ansible_facts.services.get(item, {}).get('state', '') != 'running'
     fail_msg: >-
-      A {{ datev_skr04_backend_context }} backend remains running after runtime
-      masking. No protected operation may continue.
+      A {{ datev_skr04_backend_context }} backend remains running after its
+      migration-owned runtime mask was recorded and stop was attempted. Recovery
+      can now safely remove or reseal exactly the masks created by this run.
   loop: "{{ datev_skr04_backend_units_to_mask }}"
