@@ -23,6 +23,7 @@ on:
     branches:
       - master
       - "feature/datev-skr04-migration"
+      - "fix/datev-nginx-web-service"
     paths:
       - ".gitignore"
       - "ansible.cfg"
@@ -102,6 +103,7 @@ jobs:
           set -euo pipefail
           .venv/bin/python tests/validate_datev_skr04.py
           .venv/bin/python tests/validate_datev_skr04_integrity.py
+          .venv/bin/python tests/validate_datev_skr04_web_service.py
 
       - name: Validate all migration YAML documents
         shell: bash
