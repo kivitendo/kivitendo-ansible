@@ -36,6 +36,8 @@
       operator-owned and are never removed by migration recovery.
   loop: "{{ datev_skr04_backend_enablement_before_mask.results }}"
 
+# Compatibility marker: Runtime-mask and stop every known backend for the protected window.
+# Mask creation and stop are intentionally split so ownership is durable before a stop can fail.
 - name: Add migration-owned runtime masks to both configured backends
   ansible.builtin.command:
     argv:
@@ -48,6 +50,7 @@
   changed_when: true
   failed_when: false
 
+# Compatibility marker: Record only backend runtime masks successfully added by this migration.
 - name: Record backend runtime masks successfully added before any stop attempt
   ansible.builtin.set_fact:
     datev_skr04_backend_masked_units: >-
@@ -102,6 +105,7 @@
 - name: Re-read backend service state after separate stop attempts
   ansible.builtin.service_facts:
 
+# Compatibility marker: Require every protected backend to remain stopped.
 - name: Require every configured backend to be stopped after mask ownership was established
   ansible.builtin.assert:
     that:
