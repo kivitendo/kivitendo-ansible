@@ -1,5 +1,5 @@
 ---
-- name: Validate target precision and approved fiscal boundary before preflight
+- name: Validate target precision before any snapshot or target write and pin approved fiscal boundary
   ansible.builtin.assert:
     that:
       - (datev_skr04_precision | string) is match('^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$')
