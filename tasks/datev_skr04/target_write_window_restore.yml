@@ -75,54 +75,43 @@
     datev_skr04_web_restore_allowed: >-
       {{ datev_skr04_target_window_backends_ready | default(false) | bool }}
 
+- name: Release deferred target backend masks and revalidate authoritative entry state
+  ansible.builtin.include_tasks: backend_runtime_final_gate.yml
+  vars:
+    datev_skr04_backend_final_restore_items: "{{ datev_skr04_target_backend_restore_items | default([]) }}"
+    datev_skr04_backend_final_masked_units: "{{ datev_skr04_backend_masked_units | default([]) }}"
+    datev_skr04_backend_final_deferred_unmask_units: "{{ datev_skr04_backend_deferred_unmask_units | default([]) }}"
+    datev_skr04_backend_final_context: target-write
+
+- name: Jointly revalidate target backends and web topology at the final boundary
+  ansible.builtin.include_tasks: web_service_final_gate.yml
+  vars:
+    datev_skr04_web_final_backend_ready: "{{ datev_skr04_backend_final_ready | default(false) | bool }}"
+    datev_skr04_web_final_backend_restore_items: "{{ datev_skr04_target_backend_restore_items | default([]) }}"
+    datev_skr04_web_final_backend_masked_units: "{{ datev_skr04_backend_masked_units | default([]) }}"
+
 - name: Re-read service state after every target-window restoration attempt
-  ansible.builtin.service_facts:
+  ansible.builtin.debug:
+    msg: Final backend and web service state was jointly re-read by the final recovery gates.
+  changed_when: false
 
 - name: Fail only after all target-window restoration attempts completed
   ansible.builtin.assert:
     that:
       - >-
-        datev_skr04_web_runtime_unmask_ok | default(false) | bool or
-        (
-          datev_skr04_web_runtime_reseal_ok | default(false) | bool and
-          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') != 'running' and
-          (
-            datev_skr04_other_web_service_unit not in ansible_facts.services or
-            ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
-          )
-        )
+        datev_skr04_backend_final_ready | default(false) | bool or
+        datev_skr04_backend_final_reseal_ok | default(false) | bool
+      - >-
+        datev_skr04_web_final_ready | default(false) | bool or
+        datev_skr04_web_final_reseal_ok | default(false) | bool
       - datev_skr04_target_window_backends_ready | default(false) | bool
+      - datev_skr04_backend_final_ready | default(false) | bool
+      - datev_skr04_web_final_ready | default(false) | bool
       - datev_skr04_web_runtime_unmask_ok | default(false) | bool
-      - >-
-        not (datev_skr04_web_service_was_running | default(false) | bool) or
-        (
-          datev_skr04_web_restore_safe | default(false) | bool and
-          not (datev_skr04_web_service_restore_attempt.failed | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
-        )
-      - >-
-        datev_skr04_other_web_service_unit not in ansible_facts.services or
-        ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
-      - >-
-        (
-          datev_skr04_target_window_fcgi_was_running | default(false) | bool and
-          ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
-        ) or
-        (
-          not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') != 'running'
-        )
-      - >-
-        (
-          datev_skr04_target_window_task_was_running | default(false) | bool and
-          ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
-        ) or
-        (
-          not (datev_skr04_target_window_task_was_running | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') != 'running'
-        )
+      - datev_skr04_web_final_backend_state_ok | default(false) | bool
     fail_msg: >-
       One or more services did not return to the authoritative target-window
-      entry state. Backend runtime masks and HTTP runtime masks are fail-closed:
-      any unmask/state mismatch is resealed before this assertion fails. Complete
-      production service recovery before any further migration action.
+      entry state. Entry-stopped backends remain masked through web reopening and
+      are released only at the final backend gate. Backend and HTTP state are
+      then jointly re-read; any final mismatch is fail-closed resealed before
+      this assertion aborts the migration.
