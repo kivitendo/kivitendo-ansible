@@ -78,6 +78,7 @@ my $run_id           = required_env('KIVITENDO_RUN_ID');
 my $chart            = required_env('KIVITENDO_CHART');
 my $superuser        = required_env('KIVITENDO_SUPERUSER');
 my $superuser_pass   = required_env('KIVITENDO_SUPERUSER_PASSWORD');
+my $pgoptions        = required_env('PGOPTIONS');
 my $default_currency = optional_env('KIVITENDO_DEFAULT_CURRENCY', 'EUR');
 my $precision        = optional_env('KIVITENDO_PRECISION', '0.01');
 my $marker_key       = 'kivitendo-datev-skr04-v1';
@@ -105,6 +106,8 @@ $db_port =~ /^\d{1,5}$/ && $db_port > 0 && $db_port <= 65535
   or die "Invalid database port\n";
 $chart eq 'Germany-DATEV-SKR04EU'
   or die "Only Germany-DATEV-SKR04EU is permitted by this migration helper\n";
+$pgoptions eq '-c search_path=public,pg_catalog'
+  or die "Native initialization requires PGOPTIONS=-c search_path=public,pg_catalog\n";
 -f "$root/sql/${chart}-chart.sql"
   or die "Requested SKR04 chart file does not exist\n";
 
@@ -115,10 +118,11 @@ my $admin_dbh = DBI->connect(
   $db_password,
   { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
 );
+$admin_dbh->do('SET search_path TO public, pg_catalog');
 my $occupied_names = $admin_dbh->selectall_arrayref(
   q{
     SELECT datname
-      FROM pg_database
+      FROM pg_catalog.pg_database
      WHERE datname = ?
         OR left(datname, length('kivi_skr04_stage_')) = 'kivi_skr04_stage_'
      ORDER BY datname
@@ -205,10 +209,11 @@ my $staging_dbh = DBI->connect(
   $db_password,
   { AutoCommit => 0, RaiseError => 1, PrintError => 0 },
 );
+$staging_dbh->do('SET search_path TO public, pg_catalog');
 
 my $marker_created = eval {
   $staging_dbh->do(q{
-    CREATE TABLE datev_skr04_migration_marker (
+    CREATE TABLE public.datev_skr04_migration_marker (
       marker_key text PRIMARY KEY,
       run_id text NOT NULL,
       source_database text NOT NULL,
@@ -219,7 +224,7 @@ my $marker_created = eval {
   });
   $staging_dbh->do(
     q{
-      INSERT INTO datev_skr04_migration_marker
+      INSERT INTO public.datev_skr04_migration_marker
         (marker_key, run_id, source_database, target_database)
       VALUES (?, ?, ?, ?)
     },
@@ -246,6 +251,7 @@ $admin_dbh = DBI->connect(
   $db_password,
   { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
 );
+$admin_dbh->do('SET search_path TO public, pg_catalog');
 my $quoted_staging = $admin_dbh->quote_identifier($staging_db);
 my $quoted_target  = $admin_dbh->quote_identifier($target_db);
 my $renamed = eval {
@@ -266,18 +272,19 @@ my $target_dbh = DBI->connect(
   $db_password,
   { AutoCommit => 1, RaiseError => 1, PrintError => 0 },
 );
-my ($defaults_rows) = $target_dbh->selectrow_array('SELECT count(*) FROM defaults');
-my ($installed_coa) = $target_dbh->selectrow_array('SELECT coa FROM defaults');
+$target_dbh->do('SET search_path TO public, pg_catalog');
+my ($defaults_rows) = $target_dbh->selectrow_array('SELECT count(*) FROM public.defaults');
+my ($installed_coa) = $target_dbh->selectrow_array('SELECT coa FROM public.defaults');
 my ($account_count)  = $target_dbh->selectrow_array(
-  q{SELECT count(*) FROM chart WHERE charttype = 'A'},
+  q{SELECT count(*) FROM public.chart WHERE charttype = 'A'},
 );
 my ($wrong_lengths)  = $target_dbh->selectrow_array(
-  q{SELECT count(*) FROM chart WHERE charttype = 'A' AND accno !~ '^[0-9]{4}$'},
+  q{SELECT count(*) FROM public.chart WHERE charttype = 'A' AND accno !~ '^[0-9]{4}$'},
 );
 my $marker = $target_dbh->selectrow_hashref(
   q{
     SELECT marker_key, run_id, source_database, target_database
-    FROM datev_skr04_migration_marker
+    FROM public.datev_skr04_migration_marker
     WHERE marker_key = ?
   },
   undef,
