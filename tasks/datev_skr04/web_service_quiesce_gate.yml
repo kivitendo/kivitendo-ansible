@@ -1,0 +1,36 @@
+---
+- name: Re-read supported web frontend state at the protected-operation boundary
+  ansible.builtin.service_facts:
+
+- name: Re-read runtime mask state at the protected-operation boundary
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_web_units_to_mask | default([datev_skr04_web_service_unit]) }}"
+  register: datev_skr04_web_boundary_mask_verification
+  changed_when: false
+  failed_when: false
+
+- name: Require runtime masks to remain active at the protected-operation boundary
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | trim) in ['masked', 'masked-runtime']
+    fail_msg: >-
+      A supported frontend lost its runtime mask before the protected operation.
+      Snapshot or target writes are blocked because the HTTP write path can no
+      longer be proven quiesced for the whole window.
+  loop: "{{ datev_skr04_web_boundary_mask_verification.results }}"
+
+- name: Require both supported HTTP write paths to remain stopped
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') != 'running'
+      - >-
+        datev_skr04_other_web_service_unit not in ansible_facts.services or
+        ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
+    fail_msg: >-
+      A supported HTTP frontend is running at the protected-operation boundary.
+      The migration refuses to snapshot or write a target while a web write path
+      can accept traffic.
