@@ -88,8 +88,8 @@
 - name: Write the finalized manifest using YAML-safe serialization
   ansible.builtin.copy:
     dest: "{{ datev_skr04_backup_directory }}/manifest.yml"
-    owner: postgres
-    group: postgres
+    owner: root
+    group: root
     mode: "0600"
     content: "{{ datev_skr04_snapshot_manifest_final_payload | to_nice_yaml(indent=2) }}"
 
