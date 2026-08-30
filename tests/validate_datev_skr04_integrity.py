@@ -69,6 +69,30 @@ def main() -> int:
     require("run-datev-skr04-reviewed.sh" in t["docs"] and "git show" in t["docs"],
             "operator runbook does not use the immutable launcher entry point", failures)
 
+    # The host-wide lock must cover the entire worktree/Ansible lifetime, and
+    # no mutable-repository checkout hook/filter/config may execute as root.
+    require(has(t["launcher"],
+                "command -v flock",
+                "LOCK_FILE=/root/.kivitendo-datev-skr04.lock",
+                'exec 9>"$LOCK_FILE"',
+                "flock -n 9",
+                "another reviewed DATEV preflight/apply is already running on this host",
+                "env -i",
+                "GIT_CONFIG_NOSYSTEM=1",
+                "core.hooksPath=\"$HOOKS_DIR\"",
+                "core.fsmonitor=false",
+                "core.attributesFile=/dev/null",
+                "worktree add --detach --no-checkout",
+                "read-tree \"$EXPECTED_SHA\"",
+                "archive --format=tar \"$EXPECTED_SHA\"",
+                "Materializing reviewed tree bytes without checkout hooks or filters"),
+            "reviewed launcher does not serialize runs or neutralize checkout-time executable Git configuration",
+            failures)
+    require(t["launcher"].find("flock -n 9") < t["launcher"].find("worktree add --detach --no-checkout"),
+            "host-wide lock is acquired only after reviewed worktree creation begins", failures)
+    require("worktree add --detach \"$RUN_DIR\"" not in t["launcher"],
+            "launcher still contains an ordinary checkout-capable worktree-add path", failures)
+
     # Defense-in-depth: every migration runtime byte is compared with reviewed HEAD.
     require(has(t["checkout"],
                 "ls-tree", "Read reviewed HEAD blob for every tracked migration runtime input",
