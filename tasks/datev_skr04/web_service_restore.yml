@@ -3,7 +3,7 @@
   ansible.builtin.set_fact:
     datev_skr04_web_runtime_unmask_ok: true
 
-- name: Remove only migration-added runtime masks from supported web frontends
+- name: Remove only migration-added runtime masks when recovery is allowed
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
@@ -16,6 +16,7 @@
   failed_when: false
   when:
     - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - datev_skr04_web_restore_allowed | default(true) | bool
     - (item.stdout | default('') | trim) not in ['masked', 'masked-runtime']
 
 - name: Record any runtime-mask cleanup failure without skipping recovery checks
