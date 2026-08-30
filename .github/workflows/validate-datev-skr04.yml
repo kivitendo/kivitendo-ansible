@@ -13,6 +13,7 @@ on:
       - "datev-skr04-*.yml"
       - "tasks/datev_skr04/**"
       - "scripts/bootstrap-debian-controller.sh"
+      - "scripts/run-datev-skr04-reviewed.sh"
       - "scripts/kivitendo-create-dataset.pl"
       - "sql/datev-skr04-source-fingerprint.sql"
       - "docs/DATEV_SKR04_MIGRATION.md"
@@ -33,6 +34,7 @@ on:
       - "datev-skr04-*.yml"
       - "tasks/datev_skr04/**"
       - "scripts/bootstrap-debian-controller.sh"
+      - "scripts/run-datev-skr04-reviewed.sh"
       - "scripts/kivitendo-create-dataset.pl"
       - "sql/datev-skr04-source-fingerprint.sql"
       - "docs/DATEV_SKR04_MIGRATION.md"
@@ -157,7 +159,7 @@ jobs:
           package LXDebug; sub new { bless {}, shift } 1;
           PERL
           cat >"$stub_dir/SL/LxOfficeConf.pm" <<'PERL'
-          package SL::LxOfficeConf; sub import { } sub read { 1 } 1;
+          package SL::LxOfficeConf; sub import { } 1; sub read { 1 } 1;
           PERL
           cat >"$stub_dir/SL/Request.pm" <<'PERL'
           package SL::Request; sub new { bless {}, shift } 1;
