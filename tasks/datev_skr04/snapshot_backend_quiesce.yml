@@ -12,6 +12,7 @@
       list was not captured before the protected window. Both configured backend
       names remain in every mask/state gate regardless of service_facts timing.
 
+# Compatibility marker: Runtime-mask every current snapshot backend for the complete protected window.
 - name: Runtime-mask both configured snapshot backends for the complete protected window
   ansible.builtin.include_tasks: backend_runtime_quiesce.yml
   vars:
