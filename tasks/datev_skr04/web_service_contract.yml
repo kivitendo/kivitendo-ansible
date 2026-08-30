@@ -1,0 +1,25 @@
+---
+- name: Validate the explicitly configured kivitendo web service
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_web_service_name in ['apache2', 'nginx']
+    fail_msg: >-
+      datev_skr04_web_service_name must explicitly identify the write-capable
+      kivitendo HTTP frontend. Supported values are apache2 and nginx.
+
+- name: Read service state for the configured kivitendo web frontend
+  ansible.builtin.service_facts:
+
+- name: Bind the configured web frontend to an existing running systemd unit
+  ansible.builtin.set_fact:
+    datev_skr04_web_service_unit: "{{ datev_skr04_web_service_name }}.service"
+
+- name: Require the configured web frontend to exist and be running
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_web_service_unit in ansible_facts.services
+      - ansible_facts.services[datev_skr04_web_service_unit].state == 'running'
+    fail_msg: >-
+      The configured kivitendo web frontend does not exist or is not running.
+      Refusing to continue because the migration must know exactly which HTTP
+      service to quiesce during snapshot and target-write windows.
