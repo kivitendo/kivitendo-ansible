@@ -51,6 +51,12 @@
         - always
         - preflight
 
+    - name: Bind the explicit write-capable kivitendo web frontend
+      ansible.builtin.include_tasks: tasks/datev_skr04/web_service_contract.yml
+      tags:
+        - always
+        - preflight
+
     - name: Bind the live filesystem document store to mandatory recovery evidence
       ansible.builtin.include_tasks: tasks/datev_skr04/document_store_contract.yml
       tags:
@@ -134,8 +140,16 @@
         - name: Derive and reserve the exact native staging namespace before interruption
           ansible.builtin.include_tasks: tasks/datev_skr04/derive_staging_identity.yml
 
-        - name: Capture mandatory source, auth, installation and document snapshots
-          ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
+        - name: Capture mandatory snapshots with the configured web frontend quiesced
+          block:
+            - name: Stop the configured web frontend before the consistent snapshot
+              ansible.builtin.include_tasks: tasks/datev_skr04/web_service_quiesce.yml
+
+            - name: Capture mandatory source, auth, installation and document snapshots
+              ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
+          always:
+            - name: Restore the configured web frontend after the snapshot window
+              ansible.builtin.include_tasks: tasks/datev_skr04/web_service_restore.yml
 
         - name: Finalize and validate the actual snapshot evidence timestamp
           ansible.builtin.include_tasks: tasks/datev_skr04/finalize_snapshot_manifest.yml
@@ -199,9 +213,9 @@
       ansible.builtin.debug:
         msg: >-
           Read-only preflight complete. The reviewed orchestration checkout,
-          document store, installed privileged source tree, PostgreSQL role graph,
-          schema path, numeric precision, source closing boundary and socket/TCP
-          cluster binding were verified. No target or staging database, auth
-          client, posting, customer, invoice, default-client or task-server change
-          was made.
+          explicit web frontend, document store, installed privileged source
+          tree, PostgreSQL role graph, schema path, numeric precision, source
+          closing boundary and socket/TCP cluster binding were verified. No
+          target or staging database, auth client, posting, customer, invoice,
+          default-client or task-server change was made.
       when: datev_skr04_mode == 'preflight'
