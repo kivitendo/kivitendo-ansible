@@ -2,6 +2,8 @@
 - name: Verify the target database as PostgreSQL superuser
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_target_db }}"
     query: |
       SELECT
@@ -138,6 +140,8 @@
 - name: Verify database ownership and complete persistent role state
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: postgres
     query: |
       SELECT
@@ -153,7 +157,7 @@
           AS granted_role_memberships,
         EXISTS (
           SELECT 1 FROM pg_roles
-          WHERE rolname LIKE 'kivi_migrate_%'
+          WHERE left(rolname, length('kivi_migrate_')) = 'kivi_migrate_'
         ) AS temporary_roles_remain
       FROM pg_database d
       JOIN pg_roles r ON r.rolname = %(db_user)s
@@ -184,6 +188,8 @@
 - name: Verify target quarantine and source authentication mapping immutability
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_auth_db }}"
     query: |
       SELECT
@@ -251,6 +257,8 @@
 - name: Re-read the source after all target-only operations
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_source_db }}"
     query: "{{ datev_skr04_source_fingerprint_query }}"
   register: datev_skr04_final_source_fingerprint_raw
