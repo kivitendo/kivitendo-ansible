@@ -81,10 +81,11 @@ def main() -> int:
     require("datev_skr04_other_web_service_unit" in text["contract"] and
             "other supported frontend" in text["contract"],
             "preflight does not reject simultaneous Apache and nginx frontends", failures)
-    require("Read selected web frontend enablement and mask state" in text["contract"] and
-            "systemctl" in text["contract"] and "is-enabled" in text["contract"] and
-            "not in ['masked', 'masked-runtime']" in text["contract"],
-            "preflight accepts a running selected frontend that cannot be restarted because it is masked", failures)
+    require("datev_skr04_restartable_web_enablement_states" in text["contract"] and
+            "enabled-runtime" in text["contract"] and "linked-runtime" in text["contract"] and
+            "transient" in text["contract"] and
+            "in datev_skr04_restartable_web_enablement_states" in text["contract"],
+            "preflight does not require a recognized restartable systemd state", failures)
 
     # Both supported HTTP units must remain impossible to start for the complete
     # snapshot/target-write window, not just happen to be stopped at one instant.
@@ -92,10 +93,15 @@ def main() -> int:
                     "Reset configured web frontend restore state for this window",
                     "Require a single supported running web frontend before quiescing",
                     "Capture enablement and mask state before applying migration runtime masks",
+                    "Require a recognized restartable selected frontend at the destructive boundary",
                     "Runtime-mask and stop every installed supported web frontend",
                     "Require every installed supported frontend to be runtime-masked",
                     "Require all supported web frontend write paths to remain quiesced"),
-            "web frontends are not entry-validated then runtime-masked before protected work", failures)
+            "web frontends are not entry-validated then positively restartability-checked and runtime-masked before protected work", failures)
+    require("datev_skr04_restartable_web_enablement_states" in text["quiesce"] and
+            "in datev_skr04_restartable_web_enablement_states" in text["quiesce"] and
+            "not-found, bad, empty and unknown results are rejected" in text["quiesce"],
+            "destructive boundary treats an inconclusive is-enabled result as restartable", failures)
     require("mask" in text["quiesce"] and "--runtime" in text["quiesce"] and
             "--now" in text["quiesce"] and "datev_skr04_web_enablement_before_mask" in text["quiesce"],
             "protected web frontends are not held closed with reversible runtime masks", failures)
