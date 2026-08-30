@@ -13,9 +13,6 @@ if [[ "${KIVITENDO_DATEV_CLEAN_ENV:-}" != "1" ]]; then
   exit 2
 fi
 
-# Normalize the small process environment that this shell itself retains. Child
-# processes with executable startup surfaces (Git, tar, Bash/Python bootstrap,
-# Ansible) are additionally invoked through their own explicit env -i allowlist.
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 HOME=/root
 LANG=C.UTF-8
@@ -24,7 +21,8 @@ export PATH HOME LANG LC_ALL
 unset BASH_ENV ENV TAR_OPTIONS PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT \
   ANSIBLE_CONFIG ANSIBLE_LIBRARY ANSIBLE_ACTION_PLUGINS ANSIBLE_CALLBACK_PLUGINS \
   ANSIBLE_FILTER_PLUGINS ANSIBLE_LOOKUP_PLUGINS ANSIBLE_MODULE_UTILS \
-  ANSIBLE_ROLES_PATH PERL5OPT PERL5LIB PERLLIB PERL5DB PERL_LOCAL_LIB_ROOT \
+  ANSIBLE_ROLES_PATH ANSIBLE_COLLECTIONS_PATH ANSIBLE_COLLECTIONS_PATHS \
+  PERL5OPT PERL5LIB PERLLIB PERL5DB PERL_LOCAL_LIB_ROOT \
   PERL_MB_OPT PERL_MM_OPT GIT_EXTERNAL_DIFF GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM \
   GIT_CONFIG_COUNT 2>/dev/null || true
 umask 077
@@ -57,9 +55,6 @@ LOCAL_VARS_FILE="$4"
 [[ -x /usr/bin/tee ]] || fail "/usr/bin/tee is required"
 [[ -x /bin/bash ]] || fail "/bin/bash is required"
 
-# Serialize every reviewed preflight/apply on this host. Holding FD 9 keeps the
-# exclusive lock for this launcher and all child processes until the run ends.
-# /root is root-only, so an unprivileged user cannot pre-create or redirect it.
 LOCK_FILE=/root/.kivitendo-datev-skr04.lock
 exec 9>"$LOCK_FILE"
 chmod 0600 "$LOCK_FILE"
@@ -70,8 +65,6 @@ log "Acquired host-wide DATEV migration lock: $LOCK_FILE"
 # Generic form: git show <reviewed-sha>:scripts/run-datev-skr04-reviewed.sh
 # The production invocation below is deliberately stronger than this generic
 # marker because both Git and Bash are started under explicit empty environments.
-# Run the immutable launcher blob itself with BOTH Git and Bash isolated from
-# the invoking root shell. Do not execute the mutable working-tree script.
 #
 #   /usr/bin/env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 LC_ALL=C.UTF-8 \
 #     GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \
@@ -82,17 +75,10 @@ log "Acquired host-wide DATEV migration lock: $LOCK_FILE"
 #       LANG=C.UTF-8 LC_ALL=C.UTF-8 KIVITENDO_DATEV_CLEAN_ENV=1 \
 #       /bin/bash --noprofile --norc -s -- \
 #       "$EXPECTED_SHA" "$SOURCE_REPO" "$INVENTORY_FILE" "$LOCAL_VARS_FILE"
-#
-# This matters because BASH_ENV is consumed before script startup; only the
-# outer env -i boundary can prevent an inherited startup hook from running.
 
 RUN_ROOT=/root/kivitendo-datev-reviewed
 /usr/bin/install -d -m 0700 "$RUN_ROOT"
 
-# Git operations before the reviewed worktree exists are executed with an empty
-# HOME/XDG configuration, system/global config disabled, an inert hooks path,
-# fsmonitor disabled and no attributes file. --no-checkout prevents post-checkout
-# hooks and smudge/process filters; raw tree bytes are materialized with archive.
 SAFE_GIT_HOME="$(/usr/bin/mktemp -d "${RUN_ROOT}/.git-home.XXXXXX")"
 HOOKS_DIR="$(/usr/bin/mktemp -d "${RUN_ROOT}/.nohooks.XXXXXX")"
 chmod 0700 "$SAFE_GIT_HOME" "$HOOKS_DIR"
@@ -151,12 +137,8 @@ trap cleanup_failed_worktree ERR INT TERM
 
 log "Creating hook-free detached reviewed worktree metadata for $EXPECTED_SHA"
 safe_git_source worktree add --detach --no-checkout "$RUN_DIR" "$EXPECTED_SHA" >/dev/null
-
-# Ensure the worktree index represents reviewed HEAD without running checkout.
 safe_git_worktree read-tree "$EXPECTED_SHA"
 
-# Materialize raw reviewed tree objects without inherited TAR_OPTIONS or Git
-# checkout hooks/filters. Both producer and consumer run from explicit allowlists.
 log "Materializing reviewed tree bytes without checkout hooks or filters"
 safe_git_source archive --format=tar "$EXPECTED_SHA" \
   | /usr/bin/env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 LC_ALL=C.UTF-8 \
@@ -167,29 +149,36 @@ safe_git_source archive --format=tar "$EXPECTED_SHA" \
 [[ -z "$(safe_git_worktree status --porcelain=v1 --untracked-files=no)" ]] \
   || fail "materialized reviewed worktree does not match reviewed HEAD"
 
-# Copy only operator-owned inputs that deliberately remain outside Git.
 /usr/bin/install -m 0600 "$INVENTORY_FILE" "$RUN_DIR/inventory.local"
 /usr/bin/install -m 0600 "$LOCAL_VARS_FILE" "$RUN_DIR/datev-skr04.local.yml"
 
-# The reviewed worktree is root-controlled. Tracked source is not writable by
-# group/other; direct working-blob-vs-HEAD checks inside the playbook still run
-# repeatedly before every write-capable phase.
 /usr/bin/chown -R root:root "$RUN_DIR"
 /usr/bin/find "$RUN_DIR" -type d -exec chmod go-w {} +
 /usr/bin/find "$RUN_DIR" -type f -exec chmod go-w {} +
 chmod 0700 "$RUN_DIR"
 chmod 0600 "$RUN_DIR/inventory.local" "$RUN_DIR/datev-skr04.local.yml"
 
-# Bootstrap/execution no longer needs the temporary pre-worktree Git config.
 /usr/bin/rm -rf -- "$SAFE_GIT_HOME" "$HOOKS_DIR"
 trap - ERR INT TERM
 
 cd "$RUN_DIR"
 
-log "Bootstrapping Ansible from the reviewed worktree"
+# Keep every controller dependency inside this reviewed run. HOME is fresh, so
+# ~/.ansible cannot resolve to /root/.ansible, and ANSIBLE_COLLECTIONS_PATH is a
+# single empty worktree-local collection root that bootstrap force-populates
+# from the reviewed requirements.yml.
+CONTROLLER_HOME="$RUN_DIR/.controller-home"
+COLLECTIONS_DIR="$RUN_DIR/.ansible/collections"
+/usr/bin/install -d -m 0700 "$CONTROLLER_HOME" "$RUN_DIR/.ansible" "$COLLECTIONS_DIR"
+
+log "Bootstrapping Ansible with worktree-local collections"
 /usr/bin/env -i \
   PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-  HOME=/root LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  HOME="$CONTROLLER_HOME" \
+  XDG_CONFIG_HOME="$CONTROLLER_HOME" \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  ANSIBLE_COLLECTIONS_PATH="$COLLECTIONS_DIR" \
+  ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=false \
   /bin/bash --noprofile --norc scripts/bootstrap-debian-controller.sh
 
 LOG_FILE="${SOURCE_REPO}/datev-skr04-reviewed-${EXPECTED_SHA:0:12}-$(/usr/bin/date +%Y%m%d-%H%M%S).log"
@@ -198,7 +187,12 @@ log "Executing reviewed playbook; log: $LOG_FILE"
 set +e
 /usr/bin/env -i \
   PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-  HOME=/root LANG=C.UTF-8 LC_ALL=C.UTF-8 ANSIBLE_NOCOLOR=1 \
+  HOME="$CONTROLLER_HOME" \
+  XDG_CONFIG_HOME="$CONTROLLER_HOME" \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  ANSIBLE_NOCOLOR=1 \
+  ANSIBLE_COLLECTIONS_PATH="$COLLECTIONS_DIR" \
+  ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=false \
   .venv/bin/ansible-playbook \
     -i inventory.local \
     datev-skr04-migration.yml \
@@ -211,6 +205,7 @@ set -e
 printf '[datev-reviewed] ansible return code: %s\n' "$ansible_rc"
 printf '[datev-reviewed] audit-log writer return code: %s\n' "$tee_rc"
 printf '[datev-reviewed] reviewed worktree: %s\n' "$RUN_DIR"
+printf '[datev-reviewed] local collections: %s\n' "$COLLECTIONS_DIR"
 printf '[datev-reviewed] log: %s\n' "$LOG_FILE"
 printf '[datev-reviewed] worktree intentionally preserved for audit; remove it only with git worktree remove after review.\n'
 
