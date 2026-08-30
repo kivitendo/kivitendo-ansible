@@ -79,8 +79,12 @@ def main() -> int:
             ".state == 'running'" in text["contract"],
             "web-service preflight does not require the selected unit to exist and run", failures)
     require("datev_skr04_other_web_service_unit" in text["contract"] and
-            "other supported frontend must not be running" in text["contract"],
+            "other supported frontend" in text["contract"],
             "preflight does not reject simultaneous Apache and nginx frontends", failures)
+    require("Read selected web frontend enablement and mask state" in text["contract"] and
+            "systemctl" in text["contract"] and "is-enabled" in text["contract"] and
+            "not in ['masked', 'masked-runtime']" in text["contract"],
+            "preflight accepts a running selected frontend that cannot be restarted because it is masked", failures)
 
     # Both supported HTTP units must remain impossible to start for the complete
     # snapshot/target-write window, not just happen to be stopped at one instant.
@@ -103,16 +107,20 @@ def main() -> int:
             "Require both supported HTTP write paths to remain stopped" in text["quiesce_gate"],
             "protected-operation boundary does not revalidate masks and both HTTP units", failures)
 
-    # Restore only removes runtime masks added by this run; a pre-existing mask
-    # is not converted into an enabled service. Backend health and the alternate
-    # frontend are checked before the selected frontend is reopened.
+    # Restore only removes runtime masks added by this run and only after backend
+    # recovery is allowed. A failed backend restore must leave the HTTP masks in
+    # place so no operator/supervisor can reopen a broken web path.
     require("unmask" in text["restore"] and "--runtime" in text["restore"] and
             "datev_skr04_web_enablement_before_mask" in text["restore"] and
             "not in ['masked', 'masked-runtime']" in text["restore"],
             "restore does not preserve pre-existing masks while removing migration masks", failures)
+    require(ordered(text["restore"],
+                    "Remove only migration-added runtime masks when recovery is allowed",
+                    "datev_skr04_web_restore_allowed | default(true) | bool",
+                    "Re-read supported web frontend state before restoration"),
+            "runtime masks can be removed before backend recovery is permitted", failures)
     require("failed_when: false" in text["restore"] and
             "datev_skr04_web_runtime_unmask_ok" in text["restore"] and
-            "datev_skr04_web_restore_allowed | default(true) | bool" in text["restore"] and
             "datev_skr04_other_web_service_unit" in text["restore"] and
             "datev_skr04_web_restore_safe" in text["restore"],
             "frontend restoration is not failure-tolerant and backend/single-frontend gated", failures)
