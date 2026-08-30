@@ -346,6 +346,7 @@
         owner: root
         group: root
         mode: '0711'
+      when: (kivitendo_document_dir | dirname) == '/var/lib/kivitendo'
 
     - name: Create external kivitendo document directory
       ansible.builtin.file:
