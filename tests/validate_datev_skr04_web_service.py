@@ -35,6 +35,8 @@ def main() -> int:
         "quiesce": "tasks/datev_skr04/web_service_quiesce.yml",
         "restore": "tasks/datev_skr04/web_service_restore.yml",
         "restore_gate": "tasks/datev_skr04/web_service_restore_gate.yml",
+        "snapshot_entry": "tasks/datev_skr04/snapshot_backend_entry.yml",
+        "snapshot_status": "tasks/datev_skr04/snapshot_backend_restore_status.yml",
         "frozen": "tasks/datev_skr04/frozen_target_operations.yml",
         "target_restore": "tasks/datev_skr04/target_write_window_restore.yml",
         "docs": "docs/DATEV_SKR04_MIGRATION.md",
@@ -52,7 +54,7 @@ def main() -> int:
 
     for key in (
         "defaults", "local", "playbook", "contract", "quiesce", "restore",
-        "restore_gate", "frozen", "target_restore",
+        "restore_gate", "snapshot_entry", "snapshot_status", "frozen", "target_restore",
     ):
         try:
             yaml.safe_load(text[key])
@@ -78,11 +80,23 @@ def main() -> int:
                     "preflight.yml"),
             "web-service identity is not validated before the main preflight", failures)
     require(ordered(text["playbook"],
+                    "snapshot_backend_entry.yml",
                     "web_service_quiesce.yml",
                     "snapshot.yml",
+                    "snapshot_backend_restore_status.yml",
                     "web_service_restore.yml",
                     "web_service_restore_gate.yml"),
-            "snapshot is not enclosed by explicit web-service quiesce/restoration", failures)
+            "snapshot is not enclosed by backend-bound web-service quiesce/restoration", failures)
+    require("datev_skr04_snapshot_backends_ready | default(false) | bool" in text["playbook"],
+            "snapshot frontend restoration is not gated by actual backend recovery", failures)
+
+    require("datev_skr04_snapshot_fcgi_was_running_at_entry" in text["snapshot_entry"] and
+            "datev_skr04_snapshot_task_was_running_at_entry" in text["snapshot_entry"],
+            "snapshot backend entry state is not recorded before web quiescing", failures)
+    require("datev_skr04_snapshot_backends_ready" in text["snapshot_status"] and
+            "datev_skr04_snapshot_fcgi_was_running_at_entry" in text["snapshot_status"] and
+            "datev_skr04_snapshot_task_was_running_at_entry" in text["snapshot_status"],
+            "snapshot backend restoration status is not rebound to entry state", failures)
 
     require(ordered(text["quiesce"],
                     "Reset configured web frontend restore state for this window",
@@ -99,8 +113,13 @@ def main() -> int:
             "web restoration can prevent remaining service restore attempts", failures)
     require("datev_skr04_web_restore_allowed | default(true) | bool" in text["restore"],
             "web frontend cannot be kept closed when backend recovery is unhealthy", failures)
-    require("Require the configured web frontend to be restored" in text["restore_gate"],
-            "snapshot web-service restoration lacks a final verification gate", failures)
+    require("datev_skr04_other_web_service_unit" in text["restore"] and
+            "datev_skr04_web_restore_safe" in text["restore"],
+            "web restore can reopen the selected frontend while the alternate frontend is active", failures)
+    require("datev_skr04_other_web_service_unit" in text["restore_gate"] and
+            "datev_skr04_web_restore_allowed" in text["restore_gate"] and
+            "datev_skr04_web_restore_safe" in text["restore_gate"],
+            "snapshot restore gate does not enforce backend-gated single-frontend state", failures)
 
     require(ordered(text["frozen"],
                     "web_service_quiesce.yml",
