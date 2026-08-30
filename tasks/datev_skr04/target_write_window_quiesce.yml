@@ -1,4 +1,6 @@
 ---
+# Stop Apache is handled by the generic supported-frontend runtime-mask path
+# before this backend-only task file is entered.
 - name: Require target backend entry state before quiescing
   ansible.builtin.assert:
     that:
@@ -26,7 +28,7 @@
 - name: Confirm write-capable backend services are stopped for the target window
   ansible.builtin.service_facts:
 
-- name: Require all target-entry backends to remain stopped
+- name: Require all previously running write-capable services to remain stopped
   ansible.builtin.assert:
     that:
       - >-
