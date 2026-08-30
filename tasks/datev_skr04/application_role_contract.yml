@@ -13,6 +13,21 @@
         r.rolcreaterole,
         r.rolreplication,
         r.rolbypassrls,
+        EXISTS (
+          SELECT 1
+          FROM unnest(COALESCE(r.rolconfig, ARRAY[]::text[])) AS setting
+          WHERE lower(setting) LIKE 'search_path=%'
+        ) AS role_search_path_overridden,
+        (
+          SELECT count(*)::bigint
+          FROM pg_db_role_setting s
+          WHERE s.setrole = r.oid
+            AND EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(s.setconfig, ARRAY[]::text[])) AS setting
+              WHERE lower(setting) LIKE 'search_path=%'
+            )
+        ) AS database_search_path_overrides,
         (SELECT count(*)::bigint
            FROM pg_auth_members m
           WHERE m.member = r.oid) AS roles_granted_to_application,
@@ -36,10 +51,12 @@
       - not (datev_skr04_application_role_contract_state.query_result[0].rolcreaterole | bool)
       - not (datev_skr04_application_role_contract_state.query_result[0].rolreplication | bool)
       - not (datev_skr04_application_role_contract_state.query_result[0].rolbypassrls | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].role_search_path_overridden | bool)
+      - datev_skr04_application_role_contract_state.query_result[0].database_search_path_overrides | int == 0
       - datev_skr04_application_role_contract_state.query_result[0].roles_granted_to_application | int == 0
       - datev_skr04_application_role_contract_state.query_result[0].members_that_can_assume_application | int == 0
     fail_msg: >-
       The persistent kivitendo PostgreSQL role must have LOGIN and CREATEDB only,
-      inherit no other role, and have no role/login that can SET ROLE to it. This
-      protects the supposedly quarantined target from access outside kivitendo's
-      auth mappings.
+      inherit no other role, have no role/login that can SET ROLE to it and carry
+      no role/database search_path override. Native target initialization is
+      explicitly pinned to public,pg_catalog and refuses an ambient schema path.
