@@ -1,25 +1,15 @@
 ---
-- name: Read service state before the target-write freeze
-  ansible.builtin.service_facts:
-
-- name: Remember services that must be restored after target operations
-  ansible.builtin.set_fact:
-    datev_skr04_target_window_apache_was_running: >-
-      {{ ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running' }}
-    datev_skr04_target_window_fcgi_service_name: >-
-      {{ kivitendo_fcgi_service_name | default('kivitendo-fcgi') }}
-    datev_skr04_target_window_fcgi_was_running: >-
-      {{ ansible_facts.services.get((kivitendo_fcgi_service_name | default('kivitendo-fcgi')) + '.service', {}).get('state', '') == 'running' }}
-    datev_skr04_target_window_task_service_name: >-
-      {{ kivitendo_task_server_service_name | default('kivitendo-task-server') }}
-    datev_skr04_target_window_task_was_running: >-
-      {{ ansible_facts.services.get((kivitendo_task_server_service_name | default('kivitendo-task-server')) + '.service', {}).get('state', '') == 'running' }}
-
-- name: Stop Apache for the target-write freeze
-  ansible.builtin.service:
-    name: apache2
-    state: stopped
-  when: datev_skr04_target_window_apache_was_running | bool
+- name: Require target backend entry state before quiescing
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_target_window_fcgi_service_name is defined
+      - datev_skr04_target_window_task_service_name is defined
+      - datev_skr04_target_window_fcgi_was_running is defined
+      - datev_skr04_target_window_task_was_running is defined
+    fail_msg: >-
+      Target-window backend entry state was not captured before the selected HTTP
+      frontend was stopped. Refusing to infer restoration state after service
+      dependencies may already have changed it.
 
 - name: Stop dedicated kivitendo FCGI for the target-write freeze
   ansible.builtin.service:
@@ -33,15 +23,12 @@
     state: stopped
   when: datev_skr04_target_window_task_was_running | bool
 
-- name: Confirm write-capable services are stopped for the target window
+- name: Confirm write-capable backend services are stopped for the target window
   ansible.builtin.service_facts:
 
-- name: Require all previously running write-capable services to remain stopped
+- name: Require all target-entry backends to remain stopped
   ansible.builtin.assert:
     that:
-      - >-
-        not (datev_skr04_target_window_apache_was_running | bool) or
-        ansible_facts.services.get('apache2.service', {}).get('state', '') != 'running'
       - >-
         not (datev_skr04_target_window_fcgi_was_running | bool) or
         ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') != 'running'
@@ -49,6 +36,5 @@
         not (datev_skr04_target_window_task_was_running | bool) or
         ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') != 'running'
     fail_msg: >-
-      A write-capable kivitendo service could not be quiesced immediately before
-      target creation. Source boundary/fingerprint revalidation and target writes
-      are blocked.
+      A backend that was running at target-window entry could not be quiesced.
+      Source boundary/fingerprint revalidation and all target writes are blocked.
