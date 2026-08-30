@@ -1,0 +1,12 @@
+---
+- name: Validate target precision before any snapshot or target write
+  ansible.builtin.assert:
+    that:
+      - (datev_skr04_precision | string) is match('^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$')
+      - datev_skr04_precision | float > 0
+      - datev_skr04_precision | float <= 1
+    fail_msg: >-
+      datev_skr04_precision must be a positive fixed-point numeric value no
+      greater than 1. Invalid precision is rejected before snapshots so native
+      initialization cannot leave a partial target because of a later numeric
+      cast or target-default verification failure.
