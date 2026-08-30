@@ -163,6 +163,20 @@ def main() -> int:
         failures,
     )
 
+    require(
+        has(
+            preflight,
+            "Reject extra-variable shadowing of generated migration facts",
+            "datev_skr04_run_id is match('^[0-9]{8}T[0-9]{6}-[0-9a-f]{12}$')",
+            "playbook_dir ~ '/sql/datev-skr04-source-fingerprint.sql'",
+            "datev_skr04_source_fingerprint_query ==",
+            "datev_skr04_expected_sidecar_config_file ==",
+            "Generated migration facts must match their immutable repository/fact",
+        ),
+        "generated run/query/path facts are not recomputed and rejected when higher-precedence input shadows them",
+        failures,
+    )
+
     snapshot_sources_start = preflight.find("- name: Validate every source covered by the mandatory local-file snapshots")
     snapshot_sources_assert = preflight.find("- name: Assert all local customization and document stores are snapshotable", snapshot_sources_start)
     snapshot_sources_end = preflight.find("\n- name:", snapshot_sources_assert + 1)
@@ -200,6 +214,21 @@ def main() -> int:
             "item.stdout | trim | length == 0",
         ),
         "Perl override precedence is not protected by a complete Git-clean override-tree gate",
+        failures,
+    )
+    require(
+        has(
+            preflight,
+            "Audit every Perl source reachable from the kivitendo module search roots",
+            '":(glob)**/*.pm"',
+            '":(glob)**/*.pl"',
+            "Reject any modified, deleted, untracked or ignored Perl source",
+            "git, -C",
+            "diff, --name-only, HEAD",
+            "ls-files, --others, --exclude-standard",
+            "ls-files, --others, --ignored, --exclude-standard",
+        ),
+        "the privileged helper can still load modified, deleted, untracked or ignored Perl code outside modules/override",
         failures,
     )
 
