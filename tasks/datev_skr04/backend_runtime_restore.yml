@@ -10,20 +10,36 @@
       Backend runtime-restore inputs are incomplete. Refusing to reopen the web
       frontend without an explicit backend recovery and mask-ownership contract.
 
-- name: Initialize backend recovery state
+- name: Initialize backend recovery state and deferred mask ownership
   ansible.builtin.set_fact:
     datev_skr04_backend_unmask_ok: true
     datev_skr04_backend_expected_state_ok: true
     datev_skr04_backend_reseal_ok: true
+    datev_skr04_backend_immediate_unmask_units: []
+    datev_skr04_backend_deferred_unmask_units: []
 
-- name: Remove only migration-owned runtime masks from protected backends
+- name: Partition migration-owned backend masks by authoritative entry state
+  ansible.builtin.set_fact:
+    datev_skr04_backend_immediate_unmask_units: >-
+      {{
+        datev_skr04_backend_immediate_unmask_units +
+        ([item.unit] if (item.was_running | bool) and item.unit in datev_skr04_backend_masked_units else [])
+      }}
+    datev_skr04_backend_deferred_unmask_units: >-
+      {{
+        datev_skr04_backend_deferred_unmask_units +
+        ([item.unit] if not (item.was_running | bool) and item.unit in datev_skr04_backend_masked_units else [])
+      }}
+  loop: "{{ datev_skr04_backend_restore_items }}"
+
+- name: Remove migration masks only from entry-running backends before web recovery
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
       - unmask
       - --runtime
       - "{{ item }}"
-  loop: "{{ datev_skr04_backend_masked_units | default([]) }}"
+  loop: "{{ datev_skr04_backend_immediate_unmask_units }}"
   register: datev_skr04_backend_unmask_attempts
   changed_when: true
   failed_when: false
@@ -47,10 +63,10 @@
     - datev_skr04_backend_unmask_ok | bool
     - item.was_running | bool
 
-- name: Re-read backend states after normal restoration attempts
+- name: Re-read backend states before web restoration
   ansible.builtin.service_facts:
 
-- name: Record any backend state that differs from authoritative window entry
+- name: Record any backend service state that differs from authoritative entry
   ansible.builtin.set_fact:
     datev_skr04_backend_expected_state_ok: false
   loop: "{{ datev_skr04_backend_restore_items }}"
@@ -64,7 +80,25 @@
       ansible_facts.services.get(item.unit, {}).get('state', '') == 'running'
     )
 
-- name: Bind whether backend recovery must be resealed
+- name: Verify deferred entry-stopped backend masks remain active before web restoration
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - "{{ item }}"
+  loop: "{{ datev_skr04_backend_deferred_unmask_units }}"
+  register: datev_skr04_backend_deferred_mask_verification
+  changed_when: false
+  failed_when: false
+
+- name: Record any lost deferred backend mask before web restoration
+  ansible.builtin.set_fact:
+    datev_skr04_backend_expected_state_ok: false
+  loop: "{{ datev_skr04_backend_deferred_mask_verification.results | default([]) }}"
+  when:
+    - (item.stdout | default('') | trim) not in ['masked', 'masked-runtime']
+
+- name: Bind whether pre-web backend recovery must be resealed
   ansible.builtin.set_fact:
     datev_skr04_backend_reseal_required: >-
       {{
@@ -72,7 +106,7 @@
         not (datev_skr04_backend_expected_state_ok | bool)
       }}
 
-- name: Reseal every migration-owned backend after any recovery violation
+- name: Reseal every migration-owned backend after any pre-web recovery violation
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
@@ -94,7 +128,7 @@
     - item.rc is defined
     - item.rc | int != 0
 
-- name: Verify migration-owned backend runtime masks after fail-closed reseal
+- name: Verify migration-owned backend runtime masks after pre-web fail-closed reseal
   ansible.builtin.command:
     argv:
       - /usr/bin/systemctl
@@ -114,11 +148,11 @@
     - item.stdout is defined
     - (item.stdout | trim) not in ['masked', 'masked-runtime']
 
-- name: Re-read backend states after fail-closed reseal
+- name: Re-read backend states after pre-web fail-closed reseal
   ansible.builtin.service_facts:
   when: datev_skr04_backend_reseal_required | bool
 
-- name: Record any running migration-owned backend after fail-closed reseal
+- name: Record any running migration-owned backend after pre-web fail-closed reseal
   ansible.builtin.set_fact:
     datev_skr04_backend_reseal_ok: false
   loop: "{{ datev_skr04_backend_masked_units | default([]) }}"
@@ -126,7 +160,7 @@
     - datev_skr04_backend_reseal_required | bool
     - ansible_facts.services.get(item, {}).get('state', '') == 'running'
 
-- name: Bind successful authoritative backend recovery
+- name: Bind successful pre-web authoritative backend recovery
   ansible.builtin.set_fact:
     datev_skr04_backend_restore_ready: >-
       {{
