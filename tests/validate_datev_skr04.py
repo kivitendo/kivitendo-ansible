@@ -75,6 +75,8 @@ def main() -> int:
     quiesce = read("tasks/datev_skr04/target_write_window_quiesce.yml")
     restore = read("tasks/datev_skr04/target_write_window_restore.yml")
     pre_target = read("tasks/datev_skr04/pre_target_source_gate.yml")
+    pre_target_auth = read("tasks/datev_skr04/pre_target_auth_gate.yml")
+    precision_contract = read("tasks/datev_skr04/precision_contract.yml")
     snapshot = read("tasks/datev_skr04/snapshot.yml")
     snapshot_gate = read("tasks/datev_skr04/snapshot_evidence_gate.yml")
     create = read("tasks/datev_skr04/create.yml")
@@ -103,6 +105,12 @@ def main() -> int:
                 "KIVITENDO_DATEV_CLEAN_ENV",
                 "/usr/bin/env -i"),
             "external launcher does not establish the clean Git-object trust anchor before Ansible parsing")
+    require("set -o pipefail" in docs and
+            docs.find("set -o pipefail") < docs.find('show "$EXPECTED_SHA:scripts/run-datev-skr04-reviewed.sh"'),
+            "documented Git-object trust-anchor pipeline does not propagate git show failure")
+    require("set -o pipefail" in launcher and
+            launcher.find("set -o pipefail") < launcher.find('show "$EXPECTED_SHA:scripts/run-datev-skr04-reviewed.sh"'),
+            "launcher trust-anchor example omits required pipeline failure propagation")
 
     require(has(checkout,
                 "datev_skr04_expected_orchestration_commit is match('^[0-9a-f]{40}$')",
@@ -150,9 +158,21 @@ def main() -> int:
     require("datev_skr04_mode: preflight" in defaults, "preflight is not the default")
     require(has(defaults, "datev_skr04_closed_to: \"2026-07-12\"",
                          "datev_skr04_fiscal_year_start: \"2026-07-13\"",
+                         "datev_skr04_precision: \"0.01\"",
                          "datev_skr04_feature_datev: true",
                          "datev_skr04_native_export_allowed: false"),
-            "approved short-year/DATEV defaults are not pinned")
+            "approved short-year/precision/DATEV defaults are not pinned")
+    require(has(precision_contract,
+                "Validate target precision before any snapshot or target write",
+                "datev_skr04_precision | float > 0",
+                "datev_skr04_precision | float <= 1",
+                "positive fixed-point numeric value"),
+            "target precision is not validated fail-closed before snapshots")
+    require(ordered(playbook,
+                    "precision_contract.yml",
+                    "preflight.yml",
+                    "snapshot.yml"),
+            "precision validation does not precede preflight/snapshot target preparation")
     require(has(playbook, "Require DATEV support for every prepared target before snapshots",
                           "datev_skr04_feature_datev | bool"),
             "false feature_datev override is not rejected before snapshots")
@@ -175,6 +195,7 @@ def main() -> int:
                     "target_write_window_quiesce.yml",
                     "public_source_schema_contract.yml",
                     "pre_target_source_gate.yml",
+                    "pre_target_auth_gate.yml",
                     "orchestration_checkout_contract.yml",
                     "kivitendo_privileged_source_contract.yml",
                     "pre_create_integrity.yml",
@@ -183,7 +204,7 @@ def main() -> int:
                     "register.yml",
                     "verify.yml",
                     "target_write_window_restore.yml"),
-            "frozen write window does not order final source gates before every target write and restore")
+            "frozen write window does not order source/auth gates before every target write and restore")
     require("always:" in frozen and "target_write_window_restore.yml" in frozen,
             "frozen source window lacks unconditional service restoration")
     require(has(quiesce, "Stop Apache", "Stop dedicated kivitendo FCGI",
@@ -198,6 +219,16 @@ def main() -> int:
                             "datev_skr04_expected_source_fingerprint",
                             "datev_skr04_snapshot_fingerprint"),
             "frozen source fingerprint is not rebound to preflight and snapshot before writes")
+    require(has(pre_target_auth,
+                "Re-read source and target authentication state inside the frozen pre-write window",
+                "source_client_digest == datev_skr04_source_client_digest_preflight",
+                "source_users_digest == datev_skr04_source_user_digest_preflight",
+                "source_groups_digest == datev_skr04_source_group_digest_preflight",
+                "target_conflicts | int == 0",
+                "datev_skr04_pre_target_auth_verified"),
+            "source auth identity/mappings and target auth vacancy are not rebound before create")
+    require("datev_skr04_pre_target_auth_verified" in playbook,
+            "final apply gate is not bound to the frozen pre-target auth revalidation")
 
     require(snapshot.count("--format=custom") == 2 and
             snapshot.count("--host=/var/run/postgresql") >= 2,
@@ -231,8 +262,18 @@ def main() -> int:
             "INSERT INTO auth.clients_groups" not in register,
             "preparation stage grants target interactive access")
     require(has(verify, "target_access_quarantined: true", "production_cutover_performed: false",
-                        "datev_skr04_final_source_fingerprint"),
-            "final target quarantine/source immutability proof is incomplete")
+                        "datev_skr04_final_source_fingerprint",
+                        "Write the final verification report using YAML-safe serialization",
+                        "Require a root-owned non-empty regular final verification report",
+                        "datev_skr04_verification_report_state.stat.pw_name == 'root'",
+                        "datev_skr04_verification_report_state.stat.gr_name == 'root'",
+                        "datev_skr04_verification_report_state.stat.mode == '0600'"),
+            "final target quarantine/source proof or root-owned verification evidence is incomplete")
+    verification_write_start = verify.find("- name: Write the final verification report using YAML-safe serialization")
+    verification_read_start = verify.find("- name: Read back the final verification report", verification_write_start)
+    verification_write = verify[verification_write_start:verification_read_start] if 0 <= verification_write_start < verification_read_start else ""
+    require(has(verification_write, "owner: root", "group: root", 'mode: "0600"'),
+            "verification.yml is not written root:root 0600 from creation")
     require("DROP DATABASE" not in aggregate and "force: true" not in aggregate,
             "destructive cleanup primitive exists")
 
@@ -266,7 +307,7 @@ def main() -> int:
             print(f" - {failure}", file=sys.stderr)
         return 1
 
-    print(f"SKR04 migration safety contract passed ({len(TEXT_FILES) + 34} structural checks).")
+    print(f"SKR04 migration safety contract passed ({len(TEXT_FILES) + 42} structural checks).")
     return 0
 
 
