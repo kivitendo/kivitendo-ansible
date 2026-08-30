@@ -40,8 +40,12 @@ The workflow:
 - stops Apache, kivitendo FCGI and the task server for the consistent snapshot
   and restores their prior state;
 - refuses symlinked/ambiguous managed paths and any reused backup run directory;
-- executes the native dataset helper directly from the reviewed local checkout
-  and verifies its SHA-256 checksum again before temporary elevation;
+- executes the native dataset helper directly from the reviewed local checkout,
+  verifies every reachable Perl source and every native `sql/` input against the
+  pinned kivitendo Git revision, and verifies the helper SHA-256 again before
+  temporary elevation;
+- loads the protected local operator variables as a playbook `vars_file`, not as
+  Ansible extra vars, so generated migration facts retain their intended precedence;
 - creates and run-marks only a previously absent target database;
 - uses expiring temporary PostgreSQL elevation, disables it first and verifies
   that both role and HBA rule are removed before registration;
@@ -114,8 +118,6 @@ install -d -m 0700 /root/kivitendo-datev
 cd /root/kivitendo-datev
 
 git clone \
-  --branch feature/datev-skr04-migration \
-  --single-branch \
   https://github.com/DanielDietz-de/kivitendo-ansible.git \
   .
 
@@ -143,13 +145,17 @@ Fill in the source database, unused target database/client name and DATEV
 identifiers. Keep `datev_skr04_mode: preflight`. Do not place OAuth credentials
 or a clear-text database password in the file. The exact file is ignored by Git.
 
+The playbook loads `datev-skr04.local.yml` itself. Do **not** pass this file with
+`-e`, `--extra-vars` or another higher-precedence Ansible variable source.
+Generated run identifiers, protected SQL and evidence bindings must remain
+controlled by the reviewed playbook.
+
 ## 3. Run the read-only preflight
 
 ```bash
 ANSIBLE_NOCOLOR=1 \
 .venv/bin/ansible-playbook \
   -i inventory.local \
-  -e @datev-skr04.local.yml \
   datev-skr04-migration.yml \
   2>&1 | tee "datev-skr04-preflight-$(date +%Y%m%d-%H%M%S).log"
 ```
@@ -161,7 +167,7 @@ change or code change invalidates the previous fingerprint.
 ## 4. Enable the fingerprint-bound apply
 
 Only after green CI, a completed Codex review without unresolved findings and a
-successful local preflight, set:
+successful local preflight, set in `datev-skr04.local.yml`:
 
 ```yaml
 datev_skr04_mode: apply
@@ -169,7 +175,8 @@ datev_skr04_apply_confirmation: CREATE_PARALLEL_SKR04_DATASET
 datev_skr04_expected_source_fingerprint: "<fresh-final-preflight-fingerprint>"
 ```
 
-Run the same `ansible-playbook` command again. Do not use `--check` for apply.
+Run the same `ansible-playbook` command again. Do not use `--check` for apply and
+do not add `-e`/`--extra-vars` to the reviewed command.
 
 ## 5. Review evidence and the empty target
 
