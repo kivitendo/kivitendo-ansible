@@ -24,8 +24,8 @@
         d.datev_check_on_ar_transaction,
         d.datev_check_on_ap_transaction,
         d.datev_check_on_gl_transaction
-      FROM defaults d
-      LEFT JOIN currencies c ON c.id = d.currency_id;
+      FROM public.defaults d
+      LEFT JOIN public.currencies c ON c.id = d.currency_id;
     named_args:
       expected_precision: "{{ datev_skr04_precision }}"
   register: datev_skr04_all_target_defaults
@@ -55,7 +55,8 @@
     fail_msg: >-
       Native initialization or subsequent target configuration did not apply
       every declared currency, precision, accounting, inventory, feature and
-      DATEV validation default exactly. The quarantined target remains blocked.
+      DATEV validation default exactly in the public kivitendo schema. The
+      quarantined target remains blocked.
   no_log: true
 
 - name: Bind the complete target-default verification to this run
