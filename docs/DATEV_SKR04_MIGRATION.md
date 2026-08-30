@@ -217,7 +217,7 @@ LOCAL_VARS_FILE=/root/kivitendo-datev/datev-skr04.local.yml
       "$LOCAL_VARS_FILE"
 ```
 
-The launcher refuses to start without `KIVENDO_DATEV_CLEAN_ENV=1` from this
+The launcher refuses to start without `KIVITENDO_DATEV_CLEAN_ENV=1` from this
 `env -i` boundary. The `pipefail` setting is mandatory: if the reviewed launcher
 object is missing or unreadable, the command returns nonzero and no empty Bash
 consumer can turn that into a successful preflight. The launcher then creates a
