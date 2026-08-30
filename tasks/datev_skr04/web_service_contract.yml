@@ -17,6 +17,17 @@
       {{ 'nginx' if datev_skr04_web_service_name == 'apache2' else 'apache2' }}
     datev_skr04_other_web_service_unit: >-
       {{ ('nginx' if datev_skr04_web_service_name == 'apache2' else 'apache2') + '.service' }}
+    datev_skr04_restartable_web_enablement_states:
+      - enabled
+      - enabled-runtime
+      - linked
+      - linked-runtime
+      - alias
+      - static
+      - indirect
+      - disabled
+      - generated
+      - transient
 
 - name: Read selected web frontend enablement and mask state
   ansible.builtin.command:
@@ -33,12 +44,12 @@
     that:
       - datev_skr04_web_service_unit in ansible_facts.services
       - ansible_facts.services[datev_skr04_web_service_unit].state == 'running'
-      - (datev_skr04_selected_web_enablement.stdout | trim) not in ['masked', 'masked-runtime']
+      - (datev_skr04_selected_web_enablement.stdout | trim) in datev_skr04_restartable_web_enablement_states
       - >-
         datev_skr04_other_web_service_unit not in ansible_facts.services or
         ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
     fail_msg: >-
-      The configured kivitendo web frontend must exist, be running and not be
-      persistently/runtime masked, while the other supported frontend must not
-      be running. A running-but-masked frontend is rejected because the migration
-      could stop it successfully but could not guarantee restoration afterward.
+      The configured kivitendo web frontend must exist, be running and report a
+      recognized restartable systemd enablement state, while the other supported
+      frontend must not be running. masked, masked-runtime, not-found, bad, empty
+      or unknown results are rejected because restoration cannot be guaranteed.
