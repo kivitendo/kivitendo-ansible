@@ -30,7 +30,9 @@ def main() -> int:
     required = {
         "playbook": "datev-skr04-migration.yml",
         "document_store": "tasks/datev_skr04/document_store_contract.yml",
+        "preflight": "tasks/datev_skr04/preflight.yml",
         "strict": "tasks/datev_skr04/strict_environment.yml",
+        "helper": "scripts/kivitendo-create-dataset.pl",
         "fingerprint": "sql/datev-skr04-source-fingerprint.sql",
         "workflow": ".github/workflows/validate-datev-skr04.yml",
     }
@@ -44,13 +46,16 @@ def main() -> int:
 
     playbook = read(required["playbook"])
     document_store = read(required["document_store"])
+    preflight = read(required["preflight"])
     strict = read(required["strict"])
+    helper = read(required["helper"])
     fingerprint = read(required["fingerprint"])
     workflow = read(required["workflow"])
 
     for name, text in (
         ("playbook", playbook),
         ("document-store contract", document_store),
+        ("preflight", preflight),
         ("strict environment", strict),
         ("workflow", workflow),
     ):
@@ -155,6 +160,46 @@ def main() -> int:
             "granted_role_memberships | int == 0",
         ),
         "strict environment does not enforce install/defaults/role invariants",
+        failures,
+    )
+
+    snapshot_sources_start = preflight.find("- name: Validate every source covered by the mandatory local-file snapshots")
+    snapshot_sources_assert = preflight.find("- name: Assert all local customization and document stores are snapshotable", snapshot_sources_start)
+    snapshot_sources_end = preflight.find("\n- name:", snapshot_sources_assert + 1)
+    snapshot_stat_block = preflight[snapshot_sources_start:snapshot_sources_assert]
+    snapshot_assert_block = preflight[snapshot_sources_assert:snapshot_sources_end]
+    require(
+        snapshot_sources_start >= 0 and snapshot_sources_assert > snapshot_sources_start,
+        "mandatory local snapshot-source contract is missing",
+        failures,
+    )
+    require(
+        "follow: false" in snapshot_stat_block,
+        "mandatory local snapshot roots are still inspected by following symlinks",
+        failures,
+    )
+    require(
+        "not (item.stat.islnk | default(false) | bool)" in snapshot_assert_block,
+        "mandatory local snapshot roots do not explicitly reject symlinks",
+        failures,
+    )
+
+    require(
+        'unshift @INC, "$root/modules/override", $root, "$root/modules/fallback";' in helper,
+        "native helper no longer exposes the expected override-precedence model",
+        failures,
+    )
+    require(
+        has(
+            preflight,
+            "Audit the complete kivitendo Perl override tree against the pinned checkout",
+            "diff, --name-only, HEAD, --, modules/override",
+            "ls-files, --others, --exclude-standard, --, modules/override",
+            "ls-files, --others, --ignored, --exclude-standard, --, modules/override",
+            "Reject modified, untracked or ignored Perl override modules",
+            "item.stdout | trim | length == 0",
+        ),
+        "Perl override precedence is not protected by a complete Git-clean override-tree gate",
         failures,
     )
 
