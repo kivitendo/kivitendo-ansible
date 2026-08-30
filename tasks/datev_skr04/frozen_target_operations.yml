@@ -1,11 +1,17 @@
 ---
 - name: Freeze source writes and execute all target-only operations
   block:
-    - name: Quiesce the configured kivitendo web frontend for the target-write window
+    - name: Capture backend entry state before stopping the selected frontend
+      ansible.builtin.include_tasks: target_backend_entry.yml
+
+    - name: Runtime-mask and stop supported web frontends for the target-write window
       ansible.builtin.include_tasks: web_service_quiesce.yml
 
-    - name: Quiesce remaining write-capable kivitendo services for the target-write window
+    - name: Quiesce remaining write-capable kivitendo backends from entry state
       ansible.builtin.include_tasks: target_write_window_quiesce.yml
+
+    - name: Revalidate frontend runtime masks at the target-write boundary
+      ansible.builtin.include_tasks: web_service_quiesce_gate.yml
 
     - name: Revalidate the approved public-schema closing boundary while frozen
       ansible.builtin.include_tasks: public_source_schema_contract.yml
@@ -68,5 +74,5 @@
       ansible.builtin.include_tasks: application_role_contract.yml
 
   always:
-    - name: Restore backend services first, then reopen the configured frontend if safe
+    - name: Restore backend services first, then remove web masks and reopen the configured frontend if safe
       ansible.builtin.include_tasks: target_write_window_restore.yml
