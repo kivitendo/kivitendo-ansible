@@ -81,11 +81,18 @@ def main() -> int:
     require("datev_skr04_other_web_service_unit" in text["contract"] and
             "ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'" in text["contract"],
             "preflight does not reject simultaneous Apache and nginx frontends", failures)
-    require("datev_skr04_restartable_web_enablement_states" in text["contract"] and
-            "enabled-runtime" in text["contract"] and "linked-runtime" in text["contract"] and
-            "transient" in text["contract"] and
-            "in datev_skr04_restartable_web_enablement_states" in text["contract"],
-            "preflight does not require a recognized restartable systemd state", failures)
+
+    allowlist_start = text["contract"].find("datev_skr04_restartable_web_enablement_states:")
+    allowlist_end = text["contract"].find("\n- name:", allowlist_start)
+    allowlist = text["contract"][allowlist_start:allowlist_end] if 0 <= allowlist_start < allowlist_end else ""
+    require(all(f"- {state}" in allowlist for state in (
+                "enabled", "enabled-runtime", "static", "indirect", "disabled", "generated")),
+            "reviewed maskable systemd state allowlist is incomplete", failures)
+    require(all(f"- {state}" not in allowlist for state in (
+                "linked", "linked-runtime", "alias", "transient", "masked", "masked-runtime")),
+            "unsupported linked/transient/masked unit state remains allowlisted", failures)
+    require("in datev_skr04_restartable_web_enablement_states" in text["contract"],
+            "preflight does not require a positively recognized maskable systemd state", failures)
 
     # Both supported HTTP units must remain impossible to start for the complete
     # snapshot/target-write window, not just happen to be stopped at one instant.
@@ -100,7 +107,7 @@ def main() -> int:
             "web frontends are not entry-validated then positively restartability-checked and runtime-masked before protected work", failures)
     require("datev_skr04_restartable_web_enablement_states" in text["quiesce"] and
             "in datev_skr04_restartable_web_enablement_states" in text["quiesce"] and
-            "not-found, bad, empty and unknown results are rejected" in text["quiesce"],
+            "not-found, bad, empty" in text["quiesce"],
             "destructive boundary treats an inconclusive is-enabled result as restartable", failures)
     require("mask" in text["quiesce"] and "--runtime" in text["quiesce"] and
             "--now" in text["quiesce"] and "datev_skr04_web_enablement_before_mask" in text["quiesce"],
@@ -114,8 +121,7 @@ def main() -> int:
             "protected-operation boundary does not revalidate masks and both HTTP units", failures)
 
     # Restore only removes runtime masks added by this run and only after backend
-    # recovery is allowed. A failed backend restore must leave the HTTP masks in
-    # place so no operator/supervisor can reopen a broken web path.
+    # recovery is allowed. A failed or partial unmask must leave HTTP safely sealed.
     require("unmask" in text["restore"] and "--runtime" in text["restore"] and
             "datev_skr04_web_enablement_before_mask" in text["restore"] and
             "not in ['masked', 'masked-runtime']" in text["restore"],
@@ -143,18 +149,24 @@ def main() -> int:
             "datev_skr04_other_web_service_unit" in text["restore_gate"],
             "snapshot restore gate does not fail only after verifying healthy restore or safe reseal", failures)
 
-    # Snapshot backend state is captured before frontend stop; backends are then
-    # explicitly stopped from that immutable entry state and restored from it.
+    # Entry state is restoration metadata only. Immediately before the protected
+    # operation every known FCGI/task backend is stopped from its current state.
     require("datev_skr04_snapshot_fcgi_was_running_at_entry" in text["snapshot_entry"] and
             "datev_skr04_snapshot_task_was_running_at_entry" in text["snapshot_entry"],
-            "snapshot backend entry state is not captured before frontend quiescing", failures)
-    require("Require snapshot backend entry state before quiescing" in text["snapshot_quiesce"] and
-            "Stop snapshot-entry FCGI backend when it was running" in text["snapshot_quiesce"] and
-            "Stop snapshot-entry task server when it was running" in text["snapshot_quiesce"],
-            "snapshot backend quiesce does not use pre-frontend entry state", failures)
+            "snapshot backend entry state is not captured for restoration", failures)
+    require(ordered(text["snapshot_quiesce"],
+                    "Re-read backend state immediately before snapshot quiescing",
+                    "Stop the FCGI backend from its current state before snapshotting",
+                    "Stop the task server from its current state before snapshotting",
+                    "Re-read backend state at the snapshot operation boundary",
+                    "Require all known snapshot backends to be stopped regardless of entry state"),
+            "snapshot backend quiesce is not current-state driven and unconditional at the boundary", failures)
+    require("datev_skr04_snapshot_fcgi_was_running_at_entry | bool" not in text["snapshot_quiesce"] and
+            "datev_skr04_snapshot_task_was_running_at_entry | bool" not in text["snapshot_quiesce"],
+            "snapshot entry flags still exempt a backend from current-state quiescing", failures)
     require("Attempt snapshot-entry FCGI backend restoration" in text["snapshot_restore"] and
             "Attempt snapshot-entry task-server restoration" in text["snapshot_restore"],
-            "snapshot backends are not restored from pre-frontend entry state", failures)
+            "snapshot backends are not restored from original entry state", failures)
     require("datev_skr04_snapshot_backends_ready" in text["snapshot_status"] and
             "datev_skr04_snapshot_fcgi_was_running_at_entry" in text["snapshot_status"] and
             "datev_skr04_snapshot_task_was_running_at_entry" in text["snapshot_status"],
@@ -169,19 +181,23 @@ def main() -> int:
                     "snapshot_backend_restore_status.yml",
                     "web_service_restore.yml",
                     "web_service_restore_gate.yml"),
-            "snapshot window is not entry-bound, mask-protected, backend-first and fail-closed", failures)
+            "snapshot window is not entry-bound, mask-protected, backend-current-state-closed and fail-closed", failures)
     require("datev_skr04_snapshot_backends_ready | default(false) | bool" in text["playbook"],
             "snapshot frontend restore is not conditioned on actual backend recovery", failures)
 
-    # Target window must capture backend state before stopping nginx/apache, then
-    # revalidate web runtime masks immediately before all frozen source/target work.
     require("datev_skr04_target_window_fcgi_was_running" in text["target_entry"] and
             "datev_skr04_target_window_task_was_running" in text["target_entry"],
-            "target backend entry state is not captured before frontend stop", failures)
-    require("Require target backend entry state before quiescing" in text["target_quiesce"] and
-            "Stop dedicated kivitendo FCGI" in text["target_quiesce"] and
-            "Stop kivitendo task server" in text["target_quiesce"],
-            "target backend quiesce is not driven by pre-frontend entry state", failures)
+            "target backend entry state is not captured for restoration", failures)
+    require(ordered(text["target_quiesce"],
+                    "Re-read backend state immediately before the target-write freeze",
+                    "Stop dedicated kivitendo FCGI from its current state",
+                    "Stop kivitendo task server from its current state",
+                    "Confirm write-capable backend services are stopped for the target window",
+                    "Require all known write-capable backends to remain stopped regardless of entry state"),
+            "target backend quiesce is not current-state driven and unconditional at the boundary", failures)
+    require("datev_skr04_target_window_fcgi_was_running | bool" not in text["target_quiesce"] and
+            "datev_skr04_target_window_task_was_running | bool" not in text["target_quiesce"],
+            "target entry flags still exempt a backend from current-state quiescing", failures)
     require(ordered(text["frozen"],
                     "target_backend_entry.yml",
                     "web_service_quiesce.yml",
@@ -192,14 +208,14 @@ def main() -> int:
                     "create.yml",
                     "verify.yml",
                     "target_write_window_restore.yml"),
-            "target-write window is not entry-bound and mask-protected through all writes", failures)
+            "target-write window is not current-state backend-closed and mask-protected through all writes", failures)
     require(ordered(text["target_restore"],
                     "Attempt FCGI restoration after target-write window",
                     "Attempt task-server restoration after target-write window",
                     "Record whether all required backend services are restored",
                     "Attempt configured web frontend restoration only after backend recovery",
                     "Fail only after all target-window restoration attempts completed"),
-            "target recovery does not restore backends before reopening HTTP", failures)
+            "target recovery does not restore entry-running backends before reopening HTTP", failures)
     require("datev_skr04_target_window_backends_ready" in text["target_restore"] and
             "datev_skr04_web_runtime_unmask_ok" in text["target_restore"] and
             "datev_skr04_web_runtime_reseal_ok" in text["target_restore"] and
