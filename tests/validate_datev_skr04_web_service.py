@@ -37,7 +37,6 @@ def main() -> int:
         "restore_gate": "tasks/datev_skr04/web_service_restore_gate.yml",
         "frozen": "tasks/datev_skr04/frozen_target_operations.yml",
         "target_restore": "tasks/datev_skr04/target_write_window_restore.yml",
-        "target_restore_gate": "tasks/datev_skr04/target_write_window_restore_gate.yml",
         "docs": "docs/DATEV_SKR04_MIGRATION.md",
     }
 
@@ -53,7 +52,7 @@ def main() -> int:
 
     for key in (
         "defaults", "local", "playbook", "contract", "quiesce", "restore",
-        "restore_gate", "frozen", "target_restore", "target_restore_gate",
+        "restore_gate", "frozen", "target_restore",
     ):
         try:
             yaml.safe_load(text[key])
@@ -105,20 +104,24 @@ def main() -> int:
 
     require(ordered(text["frozen"],
                     "web_service_quiesce.yml",
-                    "target_write_window_quiesce.yml"),
-            "target-write window does not stop the selected HTTP frontend first", failures)
-    require(ordered(text["frozen"],
-                    "target_write_window_restore.yml",
-                    "web_service_restore.yml",
-                    "target_write_window_restore_gate.yml"),
+                    "target_write_window_quiesce.yml",
+                    "target_write_window_restore.yml"),
+            "target-write window does not quiesce and unconditionally enter its restore handler", failures)
+    require(ordered(text["target_restore"],
+                    "Attempt FCGI restoration after target-write window",
+                    "Attempt task-server restoration after target-write window",
+                    "Record whether all required backend services are restored",
+                    "Attempt configured web frontend restoration only after backend recovery",
+                    "Fail only after all target-window restoration attempts completed"),
             "target-write recovery does not restore backends before reopening the HTTP frontend", failures)
     require("datev_skr04_target_window_backends_ready" in text["target_restore"],
             "backend restoration readiness is not recorded before frontend recovery", failures)
-    require("datev_skr04_target_window_backends_ready | default(false) | bool" in text["frozen"],
+    require("web_service_restore.yml" in text["target_restore"] and
+            "datev_skr04_target_window_backends_ready | default(false) | bool" in text["target_restore"],
             "frontend restoration is not conditioned on healthy backends", failures)
-    require("datev_skr04_web_service_restore_attempt.failed" in text["target_restore_gate"] and
-            "datev_skr04_web_service_unit" in text["target_restore_gate"] and
-            "datev_skr04_target_window_backends_ready" in text["target_restore_gate"],
+    require("datev_skr04_web_service_restore_attempt.failed" in text["target_restore"] and
+            "datev_skr04_web_service_unit" in text["target_restore"] and
+            "datev_skr04_other_web_service_unit" in text["target_restore"],
             "joint target-window restore gate does not verify backend-first frontend recovery", failures)
 
     require("`apache2` or `nginx`" in text["docs"] and
