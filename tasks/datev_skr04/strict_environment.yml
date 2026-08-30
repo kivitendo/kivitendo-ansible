@@ -102,7 +102,7 @@
     login_unix_socket: /var/run/postgresql
     login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_source_db }}"
-    query: SELECT count(*)::bigint AS defaults_rows FROM defaults;
+    query: SELECT count(*)::bigint AS defaults_rows FROM public.defaults;
   register: datev_skr04_source_defaults_cardinality
   changed_when: false
 
