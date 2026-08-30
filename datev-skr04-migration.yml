@@ -148,8 +148,11 @@
             - name: Capture mandatory source, auth, installation and document snapshots
               ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
           always:
-            - name: Restore the configured web frontend after the snapshot window
+            - name: Attempt restoration of the configured web frontend after the snapshot window
               ansible.builtin.include_tasks: tasks/datev_skr04/web_service_restore.yml
+
+            - name: Verify configured web frontend restoration after the snapshot window
+              ansible.builtin.include_tasks: tasks/datev_skr04/web_service_restore_gate.yml
 
         - name: Finalize and validate the actual snapshot evidence timestamp
           ansible.builtin.include_tasks: tasks/datev_skr04/finalize_snapshot_manifest.yml
