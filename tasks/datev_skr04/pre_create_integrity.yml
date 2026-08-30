@@ -51,6 +51,8 @@
 - name: Revalidate the persistent application-role capability set before creation
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: postgres
     query: |
       SELECT
