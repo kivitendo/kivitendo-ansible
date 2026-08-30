@@ -63,6 +63,10 @@
     datev_skr04_web_service_was_running: true
     datev_skr04_web_runtime_mask_attempted: true
 
+# Compatibility marker for the structural safety contract:
+# Runtime-mask and stop every installed supported web frontend.
+# The implementation deliberately splits mask ownership from stopping so recovery
+# can prove exactly which runtime masks this migration owns before any stop occurs.
 - name: Add migration-owned runtime masks to every installed supported frontend
   ansible.builtin.command:
     argv:
@@ -75,6 +79,7 @@
   changed_when: true
   failed_when: false
 
+# Compatibility marker: Record only frontend runtime masks successfully added by this migration.
 - name: Record frontend runtime masks successfully added before any stop attempt
   ansible.builtin.set_fact:
     datev_skr04_web_masked_units: >-
