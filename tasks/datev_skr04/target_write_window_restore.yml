@@ -15,18 +15,6 @@
   failed_when: false
   when: datev_skr04_target_window_task_was_running | default(false) | bool
 
-# Kept for backwards compatibility with repository-managed Apache deployments.
-# If apache2 is the explicitly selected web frontend, it was already stopped
-# before target_write_window_quiesce.yml captured its legacy state, so this is a
-# no-op and the generic frontend restore runs after backend restoration.
-- name: Attempt Apache restoration after target-write window
-  ansible.builtin.service:
-    name: apache2
-    state: started
-  register: datev_skr04_target_window_apache_restore
-  failed_when: false
-  when: datev_skr04_target_window_apache_was_running | default(false) | bool
-
 - name: Re-read backend service state after all backend restoration attempts
   ansible.builtin.service_facts:
 
@@ -47,13 +35,6 @@
             not (datev_skr04_target_window_task_restore.failed | default(false) | bool) and
             ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
           )
-        ) and
-        (
-          not (datev_skr04_target_window_apache_was_running | default(false) | bool) or
-          (
-            not (datev_skr04_target_window_apache_restore.failed | default(false) | bool) and
-            ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
-          )
         )
       }}
 
@@ -70,10 +51,11 @@
   ansible.builtin.assert:
     that:
       - datev_skr04_target_window_backends_ready | default(false) | bool
+      - datev_skr04_web_runtime_unmask_ok | default(false) | bool
       - >-
         not (datev_skr04_web_service_was_running | default(false) | bool) or
         (
-          datev_skr04_target_window_backends_ready | default(false) | bool and
+          datev_skr04_web_restore_safe | default(false) | bool and
           not (datev_skr04_web_service_restore_attempt.failed | default(false) | bool) and
           ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
         )
@@ -86,12 +68,9 @@
       - >-
         not (datev_skr04_target_window_task_was_running | default(false) | bool) or
         ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
-      - >-
-        not (datev_skr04_target_window_apache_was_running | default(false) | bool) or
-        ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
     fail_msg: >-
       One or more services that were running before the target-write freeze could
-      not be restored safely. FCGI/task-server/backend restoration is attempted
-      before the HTTP frontend; the frontend remains closed when required
-      backends are unhealthy. Complete production service recovery before any
-      further migration action.
+      not be restored safely. FCGI/task-server restoration is attempted before
+      runtime masks are removed and the selected HTTP frontend is reopened; the
+      frontend remains closed when required backends are unhealthy. Complete
+      production service recovery before any further migration action.
