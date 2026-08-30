@@ -16,8 +16,10 @@
   when: datev_skr04_target_window_task_was_running | default(false) | bool
 
 # Kept for backwards compatibility with repository-managed Apache deployments.
-# On nginx installations this is a no-op because apache2 was not running.
-- name: Attempt Apache restoration after target-write window
+# If apache2 is the explicitly selected web frontend, it was already stopped
+# before target_write_window_quiesce.yml captured its legacy state, so this is a
+# no-op and the generic frontend restore runs after backend restoration.
+- name: Attempt legacy Apache restoration after target-write window
   ansible.builtin.service:
     name: apache2
     state: started
@@ -25,38 +27,32 @@
   failed_when: false
   when: datev_skr04_target_window_apache_was_running | default(false) | bool
 
-- name: Re-read service state after every target-window restoration attempt
+- name: Re-read backend service state after all backend restoration attempts
   ansible.builtin.service_facts:
 
-- name: Fail only after all target-window restoration attempts completed
-  ansible.builtin.assert:
-    that:
-      - >-
-        not (datev_skr04_web_service_was_running | default(false) | bool) or
+- name: Record whether all required backend services are restored
+  ansible.builtin.set_fact:
+    datev_skr04_target_window_backends_ready: >-
+      {{
         (
-          not (datev_skr04_web_service_restore_attempt.failed | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
-        )
-      - >-
-        not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) or
+          not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) or
+          (
+            not (datev_skr04_target_window_fcgi_restore.failed | default(false) | bool) and
+            ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+          )
+        ) and
         (
-          not (datev_skr04_target_window_fcgi_restore.failed | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
-        )
-      - >-
-        not (datev_skr04_target_window_task_was_running | default(false) | bool) or
+          not (datev_skr04_target_window_task_was_running | default(false) | bool) or
+          (
+            not (datev_skr04_target_window_task_restore.failed | default(false) | bool) and
+            ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
+          )
+        ) and
         (
-          not (datev_skr04_target_window_task_restore.failed | default(false) | bool) and
-          ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
+          not (datev_skr04_target_window_apache_was_running | default(false) | bool) or
+          (
+            not (datev_skr04_target_window_apache_restore.failed | default(false) | bool) and
+            ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
+          )
         )
-      - >-
-        not (datev_skr04_target_window_apache_was_running | default(false) | bool) or
-        (
-          not (datev_skr04_target_window_apache_restore.failed | default(false) | bool) and
-          ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
-        )
-    fail_msg: >-
-      One or more services that were running before the target-write freeze could
-      not be restored. The configured web frontend plus every FCGI, task-server
-      and legacy Apache restoration attempt completed; production service
-      recovery must be handled explicitly before any further migration action.
+      }}
