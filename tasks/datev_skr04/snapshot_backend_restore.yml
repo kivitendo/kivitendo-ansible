@@ -1,0 +1,20 @@
+---
+- name: Attempt snapshot-entry FCGI backend restoration
+  ansible.builtin.service:
+    name: "{{ datev_skr04_snapshot_fcgi_service_name }}"
+    state: started
+  register: datev_skr04_snapshot_fcgi_restore_attempt
+  failed_when: false
+  when:
+    - datev_skr04_quiesce_source | bool
+    - datev_skr04_snapshot_fcgi_was_running_at_entry | default(false) | bool
+
+- name: Attempt snapshot-entry task-server restoration
+  ansible.builtin.service:
+    name: "{{ datev_skr04_snapshot_task_service_name }}"
+    state: started
+  register: datev_skr04_snapshot_task_restore_attempt
+  failed_when: false
+  when:
+    - datev_skr04_quiesce_source | bool
+    - datev_skr04_snapshot_task_was_running_at_entry | default(false) | bool
