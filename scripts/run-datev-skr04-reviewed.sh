@@ -65,7 +65,11 @@ log "Acquired host-wide DATEV migration lock: $LOCK_FILE"
 # Generic form: git show <reviewed-sha>:scripts/run-datev-skr04-reviewed.sh
 # The production invocation below is deliberately stronger than this generic
 # marker because both Git and Bash are started under explicit empty environments.
+# The invoking shell MUST enable pipefail before this pipeline; otherwise an
+# unreadable/missing reviewed launcher object could be hidden by an empty Bash
+# consumer that exits zero.
 #
+#   set -o pipefail
 #   /usr/bin/env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 LC_ALL=C.UTF-8 \
 #     GIT_CONFIG_NOSYSTEM=1 /usr/bin/git \
 #       -c core.hooksPath=/dev/null -c core.fsmonitor=false \
