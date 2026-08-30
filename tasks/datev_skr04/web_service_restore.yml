@@ -1,4 +1,31 @@
 ---
+- name: Initialize runtime-mask cleanup status
+  ansible.builtin.set_fact:
+    datev_skr04_web_runtime_unmask_ok: true
+
+- name: Remove only migration-added runtime masks from supported web frontends
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - unmask
+      - --runtime
+      - "{{ item.item }}"
+  loop: "{{ datev_skr04_web_enablement_before_mask.results | default([]) }}"
+  register: datev_skr04_web_runtime_unmask_attempts
+  changed_when: true
+  failed_when: false
+  when:
+    - datev_skr04_web_runtime_mask_attempted | default(false) | bool
+    - (item.stdout | default('') | trim) not in ['masked', 'masked-runtime']
+
+- name: Record any runtime-mask cleanup failure without skipping recovery checks
+  ansible.builtin.set_fact:
+    datev_skr04_web_runtime_unmask_ok: false
+  loop: "{{ datev_skr04_web_runtime_unmask_attempts.results | default([]) }}"
+  when:
+    - item.rc is defined
+    - item.rc | int != 0
+
 - name: Re-read supported web frontend state before restoration
   ansible.builtin.service_facts:
 
@@ -7,6 +34,7 @@
     datev_skr04_web_restore_safe: >-
       {{
         (datev_skr04_web_restore_allowed | default(true) | bool) and
+        (datev_skr04_web_runtime_unmask_ok | default(false) | bool) and
         (
           datev_skr04_other_web_service_unit not in ansible_facts.services or
           ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
