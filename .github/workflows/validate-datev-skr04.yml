@@ -23,7 +23,6 @@ on:
     branches:
       - master
       - "feature/datev-skr04-migration"
-      - "fix/datev-nginx-web-service"
     paths:
       - ".gitignore"
       - "ansible.cfg"
