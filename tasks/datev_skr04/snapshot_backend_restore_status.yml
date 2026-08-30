@@ -1,0 +1,17 @@
+---
+- name: Re-read backend service state after snapshot handling
+  ansible.builtin.service_facts:
+
+- name: Bind actual snapshot backend restoration status
+  ansible.builtin.set_fact:
+    datev_skr04_snapshot_backends_ready: >-
+      {{
+        (
+          not (datev_skr04_snapshot_fcgi_was_running_at_entry | default(false) | bool) or
+          ansible_facts.services.get(datev_skr04_snapshot_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+        ) and
+        (
+          not (datev_skr04_snapshot_task_was_running_at_entry | default(false) | bool) or
+          ansible_facts.services.get(datev_skr04_snapshot_task_service_name + '.service', {}).get('state', '') == 'running'
+        )
+      }}
