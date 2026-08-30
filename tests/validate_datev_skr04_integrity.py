@@ -121,6 +121,32 @@ def main() -> int:
         "orchestration checkout is not bound to an explicit reviewed SHA and clean privileged inputs",
         failures,
     )
+    require(
+        has(
+            checkout,
+            "Enumerate every tracked migration runtime input from reviewed HEAD",
+            "ls-tree",
+            "tasks/datev_skr04",
+            "datev_skr04_tracked_runtime_inputs",
+            "Read reviewed HEAD blob for every tracked migration runtime input",
+            "Hash every working-tree migration runtime input directly",
+            "datev_skr04_runtime_head_blobs",
+            "datev_skr04_runtime_worktree_blobs",
+            "assume-unchanged or skip-worktree",
+        ),
+        "orchestration gate does not directly hash every tracked runtime input against reviewed HEAD",
+        failures,
+    )
+    for protected_runtime in (
+        "tasks/datev_skr04/create.yml",
+        "tasks/datev_skr04/register.yml",
+        "tasks/datev_skr04/verify.yml",
+        "tasks/datev_skr04/orchestration_checkout_contract.yml",
+        "scripts/kivitendo-create-dataset.pl",
+        "sql/datev-skr04-source-fingerprint.sql",
+    ):
+        require(protected_runtime in checkout,
+                f"complete working-blob audit does not require protected runtime input {protected_runtime}", failures)
     checkout_include = "tasks/datev_skr04/orchestration_checkout_contract.yml"
     require(
         playbook.find(checkout_include) < playbook.find("tasks/datev_skr04/document_store_contract.yml"),
@@ -225,9 +251,11 @@ def main() -> int:
             "FROM public.defaults",
             "FROM public.chart",
             "FROM public.acc_trans",
+            "d.closedto::text AS closed_to",
+            "datev_skr04_public_source_invariants.query_result[0].closed_to == datev_skr04_closed_to",
             "datev_skr04_public_source_invariants",
         ),
-        "authoritative source premise is not revalidated against explicit public-schema tables",
+        "authoritative public-schema source contract does not enforce the approved closing date",
         failures,
     )
     require(
