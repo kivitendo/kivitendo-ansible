@@ -33,6 +33,7 @@ def main() -> int:
         "local_example": "datev-skr04.local.example.yml",
         "checkout": "tasks/datev_skr04/orchestration_checkout_contract.yml",
         "document_store": "tasks/datev_skr04/document_store_contract.yml",
+        "public_schema": "tasks/datev_skr04/public_source_schema_contract.yml",
         "role_contract": "tasks/datev_skr04/application_role_contract.yml",
         "preflight": "tasks/datev_skr04/preflight.yml",
         "pre_create": "tasks/datev_skr04/pre_create_integrity.yml",
@@ -56,6 +57,7 @@ def main() -> int:
     local_example = texts["local_example"]
     checkout = texts["checkout"]
     document_store = texts["document_store"]
+    public_schema = texts["public_schema"]
     role_contract = texts["role_contract"]
     preflight = texts["preflight"]
     pre_create = texts["pre_create"]
@@ -71,6 +73,7 @@ def main() -> int:
         "local_example",
         "checkout",
         "document_store",
+        "public_schema",
         "role_contract",
         "preflight",
         "pre_create",
@@ -115,10 +118,17 @@ def main() -> int:
         "orchestration checkout is not bound to an explicit reviewed SHA and clean privileged inputs",
         failures,
     )
+    checkout_include = "tasks/datev_skr04/orchestration_checkout_contract.yml"
     require(
-        playbook.find("tasks/datev_skr04/orchestration_checkout_contract.yml")
-        < playbook.find("tasks/datev_skr04/document_store_contract.yml"),
+        playbook.find(checkout_include) < playbook.find("tasks/datev_skr04/document_store_contract.yml"),
         "reviewed-checkout contract must be the first migration gate",
+        failures,
+    )
+    require(
+        playbook.count(checkout_include) >= 3
+        and "Revalidate the reviewed orchestration checkout immediately before target operations" in playbook
+        and "Revalidate the reviewed orchestration checkout before auth registration" in playbook,
+        "complete orchestration checkout is not revalidated at the final pre-write boundaries",
         failures,
     )
 
@@ -183,20 +193,50 @@ def main() -> int:
             "application-role contract is not enforced before, immediately before and after target operations",
             failures)
 
-    # Source immutability must include dependent customer/vendor master data.
+    # Source immutability must include dependent customer/vendor master data and
+    # every protected relation must be bound explicitly to public, not search_path.
     for token in (
         "contacts_rows",
         "contacts_digest",
-        "FROM contacts x",
+        "FROM public.contacts x",
         "shipto_rows",
         "shipto_digest",
-        "FROM shipto x",
+        "FROM public.shipto x",
     ):
         require(token in fingerprint, f"source fingerprint omits dependent master-data token: {token}", failures)
     require("ORDER BY row_to_json(x)::text" in fingerprint,
             "dependent/default row hashing is not deterministically ordered", failures)
+    protected_tables = (
+        "defaults", "chart", "acc_trans", "ar", "ap", "gl", "customer", "vendor",
+        "contacts", "shipto", "parts", "oe", "orderitems", "delivery_orders",
+        "delivery_order_items", "invoice", "bank_transactions",
+    )
+    for table in protected_tables:
+        require(f"FROM public.{table}" in fingerprint,
+                f"source fingerprint does not bind {table} to public schema", failures)
+        require(re.search(rf"\bFROM\s+{re.escape(table)}\b", fingerprint, re.IGNORECASE) is None,
+                f"source fingerprint still has unqualified protected table {table}", failures)
+    require(
+        has(
+            public_schema,
+            "FROM public.defaults",
+            "FROM public.chart",
+            "FROM public.acc_trans",
+            "datev_skr04_public_source_invariants",
+        ),
+        "authoritative source premise is not revalidated against explicit public-schema tables",
+        failures,
+    )
+    require(
+        playbook.find("tasks/datev_skr04/preflight.yml")
+        < playbook.find("tasks/datev_skr04/public_source_schema_contract.yml")
+        < playbook.find("tasks/datev_skr04/strict_environment.yml"),
+        "public-schema source contract is not enforced immediately after general preflight",
+        failures,
+    )
 
-    # Mandatory filesystem roots must be safe and installer-compatible.
+    # Mandatory filesystem roots must be safe and installer-compatible. Parent
+    # chmod/chown is allowed only for the dedicated default /var/lib/kivitendo.
     require(
         has(
             document_store,
@@ -213,8 +253,15 @@ def main() -> int:
     parent_block = installer[parent_start:documents_start] if 0 <= parent_start < documents_start else ""
     require(
         0 <= parent_start < documents_start
-        and has(parent_block, 'path: "{{ kivitendo_document_dir | dirname }}"', "owner: root", "group: root", "mode: '0711'"),
-        "installer does not create the protected root-owned data parent before the web-writable document store",
+        and has(
+            parent_block,
+            'path: "{{ kivitendo_document_dir | dirname }}"',
+            "owner: root",
+            "group: root",
+            "mode: '0711'",
+            "when: (kivitendo_document_dir | dirname) == '/var/lib/kivitendo'",
+        ),
+        "installer may mutate a custom/shared document-store parent or fails to harden the dedicated default parent",
         failures,
     )
 
