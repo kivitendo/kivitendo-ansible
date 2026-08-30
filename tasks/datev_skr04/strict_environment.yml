@@ -99,6 +99,8 @@
 - name: Count every defaults row in the protected source database
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: "{{ datev_skr04_source_db }}"
     query: SELECT count(*)::bigint AS defaults_rows FROM defaults;
   register: datev_skr04_source_defaults_cardinality
@@ -117,6 +119,8 @@
 - name: Inspect the complete persistent application-role capability set
   become_user: postgres
   community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
     login_db: postgres
     query: |
       SELECT
