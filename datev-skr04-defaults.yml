@@ -6,6 +6,9 @@ datev_skr04_mode: preflight
 
 datev_skr04_apply_token: CREATE_PARALLEL_SKR04_DATASET
 datev_skr04_apply_confirmation: ""
+# Must be set in the protected local file to the exact Codex-reviewed commit
+# that is checked out for the operator run.
+datev_skr04_expected_orchestration_commit: ""
 
 datev_skr04_source_db: ""
 datev_skr04_target_db: ""
