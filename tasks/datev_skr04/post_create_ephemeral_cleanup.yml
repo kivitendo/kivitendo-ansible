@@ -155,14 +155,15 @@
       or datev_skr04_secondary_cleanup_state.query_result[0].hba_rule_exists | bool
   no_log: true
 
-- name: Reload PostgreSQL after secondary HBA cleanup
-  ansible.builtin.command:
-    argv:
-      - systemctl
-      - reload
-      - postgresql
+- name: Reload the exact bound PostgreSQL cluster after secondary HBA cleanup
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: SELECT pg_reload_conf() AS reloaded;
   register: datev_skr04_secondary_cleanup_reload
-  changed_when: datev_skr04_secondary_cleanup_reload.rc == 0
+  changed_when: true
   failed_when: false
   when:
     - >-
@@ -229,10 +230,21 @@
       - datev_skr04_secondary_cleanup_verification.query_result[0].hba_rule_removed | bool
       - datev_skr04_secondary_cleanup_verification.query_result[0].role_removed | bool
       - >-
+        not (
+          datev_skr04_secondary_cleanup_state.query_result[0].role_exists | bool
+          or datev_skr04_secondary_cleanup_state.query_result[0].hba_rule_exists | bool
+        ) or
+        (
+          not (datev_skr04_secondary_cleanup_reload.failed | default(true) | bool) and
+          datev_skr04_secondary_cleanup_reload.query_result | default([]) | length == 1 and
+          datev_skr04_secondary_cleanup_reload.query_result[0].reloaded | bool
+        )
+      - >-
         datev_skr04_ephemeral_cleanup_database | length == 0
         or datev_skr04_secondary_reassign.rc | default(1) | int == 0
     fail_msg: >-
-      Temporary PostgreSQL elevation could not be removed safely. Any surviving
-      role is disabled and the exact staging/target database is preserved, but
-      no authentication registration, access or cutover may proceed.
+      Temporary PostgreSQL elevation or HBA cleanup could not be applied to the
+      exact bound cluster safely. Any surviving role is disabled and the exact
+      staging/target database is preserved, but no authentication registration,
+      access or cutover may proceed.
   no_log: true
