@@ -5,4 +5,6 @@
     state: started
   register: datev_skr04_web_service_restore_attempt
   failed_when: false
-  when: datev_skr04_web_service_was_running | default(false) | bool
+  when:
+    - datev_skr04_web_service_was_running | default(false) | bool
+    - datev_skr04_web_restore_allowed | default(true) | bool
