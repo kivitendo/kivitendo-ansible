@@ -10,6 +10,10 @@
   # startup/search-path customization for every task in this reviewed play.
   # PGOPTIONS pins every libpq/DBI session spawned by the native initializer to
   # the kivitendo production schema instead of any role-level ambient search_path.
+  # The Git config-count overrides apply to every child Git process, including
+  # commands run against the installed kivitendo checkout. This prevents a
+  # mutable repository from executing fsmonitor/hooks/attributes configuration
+  # as root before its source-integrity assertions run.
   environment:
     PERL5OPT: ""
     PERL5LIB: ""
@@ -20,6 +24,20 @@
     PERL_MM_OPT: ""
     PERL_USE_UNSAFE_INC: "0"
     PGOPTIONS: "-c search_path=public,pg_catalog"
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_COUNT: "4"
+    GIT_CONFIG_KEY_0: core.hooksPath
+    GIT_CONFIG_VALUE_0: /dev/null
+    GIT_CONFIG_KEY_1: core.fsmonitor
+    GIT_CONFIG_VALUE_1: "false"
+    GIT_CONFIG_KEY_2: core.attributesFile
+    GIT_CONFIG_VALUE_2: /dev/null
+    GIT_CONFIG_KEY_3: core.sparseCheckout
+    GIT_CONFIG_VALUE_3: "false"
+    GIT_NO_REPLACE_OBJECTS: "1"
+    GIT_TERMINAL_PROMPT: "0"
+    GIT_PAGER: cat
 
   vars_files:
     - vars.yml
