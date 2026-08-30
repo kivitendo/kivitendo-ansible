@@ -140,17 +140,26 @@
         - name: Derive and reserve the exact native staging namespace before interruption
           ansible.builtin.include_tasks: tasks/datev_skr04/derive_staging_identity.yml
 
-        - name: Capture mandatory snapshots with the configured web frontend quiesced
+        - name: Capture mandatory snapshots with every write path quiesced
           block:
             - name: Capture backend entry state before the snapshot window
               ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_backend_entry.yml
 
-            - name: Stop the configured web frontend before the consistent snapshot
+            - name: Runtime-mask and stop supported web frontends
               ansible.builtin.include_tasks: tasks/datev_skr04/web_service_quiesce.yml
+
+            - name: Stop snapshot backends according to their pre-frontend entry state
+              ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_backend_quiesce.yml
+
+            - name: Revalidate frontend runtime masks at the snapshot boundary
+              ansible.builtin.include_tasks: tasks/datev_skr04/web_service_quiesce_gate.yml
 
             - name: Capture mandatory source, auth, installation and document snapshots
               ansible.builtin.include_tasks: tasks/datev_skr04/snapshot.yml
           always:
+            - name: Attempt restoration of snapshot backends from their entry state
+              ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_backend_restore.yml
+
             - name: Revalidate actual backend recovery after snapshot handling
               ansible.builtin.include_tasks: tasks/datev_skr04/snapshot_backend_restore_status.yml
 
@@ -160,7 +169,7 @@
                 datev_skr04_web_restore_allowed: >-
                   {{ datev_skr04_snapshot_backends_ready | default(false) | bool }}
 
-            - name: Verify safe single-frontend state after the snapshot window
+            - name: Fail closed unless complete snapshot service recovery succeeded
               ansible.builtin.include_tasks: tasks/datev_skr04/web_service_restore_gate.yml
               vars:
                 datev_skr04_web_restore_allowed: >-
