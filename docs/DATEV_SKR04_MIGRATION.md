@@ -1,127 +1,119 @@
 # Parallel SKR04 client preparation for DATEV
 
-This runbook prepares a new, isolated kivitendo client with SKR04 while leaving
-the existing SKR03 production client unchanged. It intentionally stops before
-customer, article, order, delivery, invoice, payment, posting, document or
-production cutover.
+This runbook prepares a new isolated kivitendo SKR04 client while leaving the
+existing SKR03 production client unchanged. It deliberately stops before
+master-data, invoice, document, access or production DATEV cutover.
 
 ## Execution model
 
-A separate Ansible control host is not required. On a single-host installation,
-run the repository directly on the existing kivitendo server with a localhost
-inventory:
+No separate Ansible control host is required. The workflow runs locally on the
+kivitendo server. The mutable repository checkout is **not** itself trusted as
+Ansible input: the operator invokes a launcher directly from the reviewed Git
+object. That launcher creates a detached root-controlled worktree at the exact
+reviewed SHA, bootstraps Ansible inside that worktree and runs the playbook there.
 
-```ini
-[kivitendo]
-localhost ansible_connection=local ansible_python_interpreter=/usr/bin/python3
-```
-
-Ansible is only the local orchestration CLI. No daemon, SSH connection or
-additional host is required.
+This external trust anchor exists because Ansible must parse a playbook before
+any task inside that playbook can audit itself.
 
 ## Non-negotiable safety contract
 
 The workflow:
 
-- accepts only an audited SKR03 source and a new SKR04 target;
-- requires distinct, strictly validated source and target database names;
-- requires the PostgreSQL endpoint to be `127.0.0.1` on the same port reported
-  by the local cluster used for inspection and backups;
-- requires the application role to have `LOGIN` and `CREATEDB`, but not
-  `SUPERUSER`;
-- refuses stale `kivi_migrate_*` roles;
-- requires all source general-ledger accounts to be four digits and no posting
-  before 13 July 2026;
-- fingerprints the full chart, defaults and relevant accounting, master-data,
-  order, delivery, invoice and bank-transaction tables;
-- binds apply to the exact fingerprint from a fresh preflight;
-- makes complete PostgreSQL, installation-tree and external-document snapshots
-  mandatory and SHA-256 checksummed before target creation;
-- stops Apache, kivitendo FCGI and the task server for the consistent snapshot
-  and restores their prior state;
-- refuses symlinked/ambiguous managed paths and any reused backup run directory;
-- executes the native dataset helper directly from the reviewed local checkout,
-  verifies every reachable Perl source and every native `sql/` input against the
-  pinned kivitendo Git revision, and verifies the helper SHA-256 again before
-  temporary elevation;
-- loads the protected local operator variables as a playbook `vars_file`, not as
-  Ansible extra vars, so generated migration facts retain their intended precedence;
-- creates and run-marks only a previously absent target database;
-- uses expiring temporary PostgreSQL elevation, disables it first and verifies
-  that both role and HBA rule are removed before registration;
-- captures exact source user/group mapping digests before auth registration and
-  proves they are unchanged afterwards;
-- registers the target as a quarantined auth client with no user or group mappings;
-- keeps the target non-default, inaccessible and without a task-server identity;
-- creates no WebDAV directory or link in this preparation stage;
-- writes a target-specific DATEV transfer contract only when its path is absent;
-- verifies that all target business tables are empty and that the source
-  fingerprint remains unchanged;
-- never performs automatic deletion or destructive rollback.
+- accepts only the audited SKR03 source and a new SKR04 target;
+- requires four-digit source ledger accounts;
+- requires the source books already closed exactly through **12 July 2026** and
+  no posting before **13 July 2026**;
+- never changes the source `closedto` itself;
+- requires DATEV support enabled for the new target;
+- binds every protected source query explicitly to PostgreSQL `public` schema;
+- fingerprints accounting, account-plan, master-data, order, delivery, invoice
+  and bank-transaction state;
+- requires the exact same fingerprint at preflight, quiesced snapshot, frozen
+  pre-target gate and final verification;
+- executes only from an explicit Codex-reviewed 40-character orchestration SHA;
+- starts Ansible from a detached worktree materialized from that Git object;
+- repeatedly compares every tracked migration runtime file byte-for-byte with
+  reviewed `HEAD`, independently of Git index flags;
+- directly compares every tracked installed kivitendo `.pm`, `.pl` and native
+  `sql/` input byte-for-byte with pinned kivitendo `HEAD` and rejects untracked
+  or ignored privileged inputs;
+- sanitizes Perl startup/search-path environment variables;
+- requires the inspected PostgreSQL Unix socket and configured loopback TCP
+  endpoint to belong to the same local cluster;
+- requires the persistent kivitendo PostgreSQL role to remain least-privileged
+  and isolated in both membership directions;
+- makes source/auth database dumps plus complete installation/document archives
+  mandatory and SHA-256 verified before target creation;
+- stops Apache, kivitendo FCGI and task server for the consistent snapshot;
+- stops those services again for the final pre-target source gate and keeps them
+  stopped throughout **all** target writes and final source verification;
+- attempts restoration of every previously running service before reporting a
+  restoration failure;
+- creates the target through kivitendo's native initializer in an isolated
+  staging namespace;
+- uses expiring SCRAM-only temporary PostgreSQL elevation, de-privileges it first
+  and verifies role/HBA cleanup;
+- registers the target as non-default, without user/group mappings and without a
+  task-server identity;
+- creates no target WebDAV link or document storage in this stage;
+- never force-drops databases and never performs destructive automatic rollback.
 
 ## Failure model
 
-Failure is evidence-preserving. The workflow does not force-drop a database,
-delete an auth client, remove WebDAV content or remove a sidecar contract. A
-partial target remains quarantined and blocks the next preflight. Inspect the
-following together before any manual recovery decision:
+Failure is evidence-preserving. A partial target remains quarantined for
+inspection. Do not delete/retry automatically. Inspect together:
 
-- the target database and its `datev_skr04_migration_marker` row;
-- the target authentication-client row and access mappings;
-- the target-specific sidecar contract;
-- the snapshot manifest and checksums;
-- the Ansible log and first failing task.
-
-Do not turn a failed run into an unreviewed delete-and-retry cycle.
+- source/auth PostgreSQL dumps;
+- installation and document archives;
+- `manifest.yml` and checksums;
+- target/staging database and migration marker if created;
+- target auth row if created;
+- target-specific DATEV sidecar if created;
+- Ansible log and first failing task.
 
 ## Successful stopping point
 
-A successful apply produces:
+A successful apply yields an **empty and inaccessible** SKR04 target with:
 
-- a fresh, run-bound `Germany-DATEV-SKR04EU` database;
-- four-digit general-ledger accounts;
-- books closed through 12 July 2026, making 13 July 2026 the first permitted
-  booking day;
-- the approved DATEV consultant and client identifiers;
-- a non-default kivitendo auth client with zero user/group access mappings;
-- no interactive access and no task-server assignment;
-- no customers, vendors, articles, orders, deliveries, invoices, postings,
-  payments, bank transactions or document-storage provisioning;
-- protected PostgreSQL and filesystem snapshots in a unique, non-reused run directory;
-- a verification report proving target isolation and source immutability;
-- a root-only transfer contract at
-  `/etc/kivitendo/datev-buchungsdatenservice-<target-db>.yml`.
+- `Germany-DATEV-SKR04EU`;
+- four-digit ledger accounts;
+- books closed through `2026-07-12`;
+- DATEV identifiers configured;
+- zero customers/vendors/articles/orders/deliveries/invoices/postings/bank data;
+- zero user/group mappings;
+- no default-client or task-server assignment;
+- complete protected recovery evidence;
+- proof that the SKR03 source remained unchanged.
 
-The native kivitendo exporter remains prohibited for the 2026 short fiscal year
-because the pinned implementation emits EXTF 510 / Buchungsstapel 7 and derives
-the fiscal-year start as 1 January. A later connector stage must produce EXTF
-700 / Buchungsstapel 13 with fiscal-year start `20260713`.
+The native kivitendo DATEV exporter remains prohibited. The pinned implementation
+uses EXTF 510 / Buchungsstapel 7 and derives fiscal-year start as January 1. A
+later reviewed stage must implement Buchungsdatenservice / EXTF 700,
+Buchungsstapel 13 and fiscal-year start `20260713`.
 
 ## Prerequisites
 
 - Debian 13 on the current kivitendo host;
 - root access;
 - healthy local PostgreSQL, Apache and kivitendo services;
-- the installed kivitendo tree at `/var/www/kivitendo-erp`;
-- the external document store at `/var/lib/kivitendo/documents`;
-- sufficient free space below `/var/backups/kivitendo/datev-skr04`;
-- no accounting edits during the apply window.
+- installed kivitendo at `/var/www/kivitendo-erp`;
+- document store at `/var/lib/kivitendo/documents`;
+- sufficient space below `/var/backups/kivitendo/datev-skr04`;
+- source `public.defaults.closedto = DATE '2026-07-12'` **before** final preflight;
+- no accounting edits during the apply window;
+- no locally modified/untracked/ignored kivitendo Perl or native SQL that could
+  execute during privileged dataset initialization.
 
-When `datev_skr04_db_password` is empty in apply mode, the workflow reads the
-existing password from the root-protected live `config/kivitendo.conf`, stores it
-only in a `no_log` fact and verifies an actual source login before any write.
+## 1. Prepare the mutable source checkout
 
-## 1. Prepare the local checkout
+The source checkout only supplies Git objects and the two local operator files;
+Ansible will not run from this working tree.
 
 ```bash
 install -d -m 0700 /root/kivitendo-datev
 cd /root/kivitendo-datev
 
-git clone \
-  https://github.com/DanielDietz-de/kivitendo-ansible.git \
-  .
-
-bash scripts/bootstrap-debian-controller.sh
+git clone https://github.com/DanielDietz-de/kivitendo-ansible.git .
+git fetch --prune origin
 ```
 
 Create the local inventory:
@@ -134,75 +126,101 @@ EOF_INVENTORY
 chmod 0600 inventory.local
 ```
 
-## 2. Create the protected local variable file
+## 2. Pin the exact reviewed commit and local variables
+
+After the PR is merged and post-merge CI is green, use the exact reviewed
+commit supplied by the release/migration gate:
 
 ```bash
-cp datev-skr04.local.example.yml datev-skr04.local.yml
+EXPECTED_SHA='<exact-reviewed-40-character-sha>'
+git cat-file -e "${EXPECTED_SHA}^{commit}"
+```
+
+Create the local variable file from that exact Git object, not from a mutable
+working-copy example:
+
+```bash
+git show "${EXPECTED_SHA}:datev-skr04.local.example.yml" > datev-skr04.local.yml
 chmod 0600 datev-skr04.local.yml
 ```
 
-Fill in the source database, unused target database/client name and DATEV
-identifiers. Keep `datev_skr04_mode: preflight`. Do not place OAuth credentials
-or a clear-text database password in the file. The exact file is ignored by Git.
+Fill in source database, unused target database/client name and DATEV identifiers.
+Set:
 
-The playbook loads `datev-skr04.local.yml` itself. Do **not** pass this file with
-`-e`, `--extra-vars` or another higher-precedence Ansible variable source.
-Generated run identifiers, protected SQL and evidence bindings must remain
-controlled by the reviewed playbook.
-
-## 3. Run the read-only preflight
-
-```bash
-ANSIBLE_NOCOLOR=1 \
-.venv/bin/ansible-playbook \
-  -i inventory.local \
-  datev-skr04-migration.yml \
-  2>&1 | tee "datev-skr04-preflight-$(date +%Y%m%d-%H%M%S).log"
+```yaml
+datev_skr04_expected_orchestration_commit: "<exact-reviewed-40-character-sha>"
+datev_skr04_mode: preflight
 ```
 
-A successful recap shows `changed=0`, `failed=0` and a 64-character source
-fingerprint. Always run it against the exact final reviewed commit. Any source
-change or code change invalidates the previous fingerprint.
+Keep the fingerprint and apply confirmation empty. Do not use `-e` or
+`--extra-vars` for this workflow.
 
-## 4. Enable the fingerprint-bound apply
+## 3. Run the final read-only preflight through the Git-object trust anchor
 
-Only after green CI, a completed Codex review without unresolved findings and a
-successful local preflight, set in `datev-skr04.local.yml`:
+Do **not** invoke `ansible-playbook` directly from `/root/kivitendo-datev`.
+Execute the launcher itself from the reviewed Git object:
+
+```bash
+cd /root/kivitendo-datev
+
+EXPECTED_SHA='<exact-reviewed-40-character-sha>'
+
+git show "${EXPECTED_SHA}:scripts/run-datev-skr04-reviewed.sh" \
+  | bash -s -- \
+      "$EXPECTED_SHA" \
+      /root/kivitendo-datev \
+      /root/kivitendo-datev/inventory.local \
+      /root/kivitendo-datev/datev-skr04.local.yml
+```
+
+The launcher creates a detached root-controlled worktree below
+`/root/kivitendo-datev-reviewed/`, copies only the two local operator inputs,
+bootstraps Ansible from reviewed requirements and executes the reviewed playbook.
+It preserves the reviewed worktree and writes the Ansible log back below
+`/root/kivitendo-datev/` for audit.
+
+A successful preflight must finish with `changed=0`, `failed=0`,
+`unreachable=0` and print a 64-character source fingerprint. Any source or code
+change invalidates that fingerprint.
+
+## 4. Enable fingerprint-bound apply
+
+Only after the final reviewed **merged** commit has green CI, Codex completed on
+that exact commit without findings, and the final local preflight succeeded, set
+in `datev-skr04.local.yml`:
 
 ```yaml
 datev_skr04_mode: apply
 datev_skr04_apply_confirmation: CREATE_PARALLEL_SKR04_DATASET
-datev_skr04_expected_source_fingerprint: "<fresh-final-preflight-fingerprint>"
+datev_skr04_expected_source_fingerprint: "<fingerprint-from-final-preflight>"
 ```
 
-Run the same `ansible-playbook` command again. Do not use `--check` for apply and
-do not add `-e`/`--extra-vars` to the reviewed command.
+Run the exact same `git show ... run-datev-skr04-reviewed.sh | bash ...` command
+again. Do not add `-e`, `--extra-vars`, `--skip-tags` or `--check`.
 
-## 5. Review evidence and the empty target
+## 5. Review evidence and quarantine
 
-The apply creates a protected directory below:
+The apply writes protected evidence below:
 
 ```text
 /var/backups/kivitendo/datev-skr04/<run-id>/
 ```
 
 Review `manifest.yml`, `verification.yml`, both PostgreSQL dumps, both filesystem
-archives, Git state and checksums. Confirm from the verification evidence and
-read-only PostgreSQL queries that the target is non-default, has no user/group
-mappings or task server, uses SKR04, contains accounts 1200, 3806 and 4400, has
-no business data, and is closed through 12 July 2026. The target must not yet be
-selectable by normal kivitendo users.
+archives, Git state and checksums. Confirm target account plan, accounts 1200,
+3806 and 4400, zero business data, no access mappings/default/task-server and
+source fingerprint equality.
 
 Do not grant access or start invoicing in the target yet.
 
-## 6. Subsequent controlled stages
+## 6. Subsequent reviewed stages
 
-Separate reviewed work must implement:
+Separate work must implement:
 
-- the agreed five-digit debtor number;
-- customer and article migration;
-- preservation of the existing invoice/storno sequence and open items;
-- document GUID migration and storage provisioning;
+- agreed five-digit debtor number;
+- customer/article migration;
+- preservation of invoice/storno sequence and open items;
+- document GUID/storage migration;
 - DATEV Buchungsdatenservice OAuth, permissions and idempotency;
-- EXTF 700 / Buchungsstapel 13 generation and DATEV-side reconciliation;
-- explicit user/group access, default-client and task-server cutover.
+- EXTF 700 / Buchungsstapel 13 generation and reconciliation;
+- explicit access/default-client/task-server cutover.
