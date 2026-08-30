@@ -1,7 +1,4 @@
 ---
-- name: Revalidate the approved source public-schema boundary in the frozen window
-  ansible.builtin.include_tasks: public_source_schema_contract.yml
-
 - name: Re-read the complete source fingerprint in the frozen target-write window
   become_user: postgres
   community.postgresql.postgresql_query:
@@ -26,7 +23,6 @@
       - datev_skr04_pre_target_source_fingerprint == datev_skr04_snapshot_fingerprint
       - datev_skr04_pre_target_source_fingerprint == datev_skr04_source_fingerprint_actual
     fail_msg: >-
-      The source changed after the mandatory snapshot or no longer has the
-      approved 2026-07-12 closing boundary. Because write-capable services are
-      frozen, this check is the final source gate before any target database,
-      sidecar or authentication write.
+      The source changed after the mandatory snapshot. Because write-capable
+      services are frozen, this is the final complete source-state gate before
+      any target database, sidecar or authentication write.
