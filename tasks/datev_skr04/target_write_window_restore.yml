@@ -38,6 +38,8 @@
         )
       }}
 
+# Attempt Apache restoration is handled by web_service_restore.yml when apache2
+# is the explicitly selected frontend; nginx follows the exact same path.
 - name: Attempt configured web frontend restoration only after backend recovery
   ansible.builtin.include_tasks: web_service_restore.yml
   vars:
