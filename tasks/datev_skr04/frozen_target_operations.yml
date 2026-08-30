@@ -68,17 +68,5 @@
       ansible.builtin.include_tasks: application_role_contract.yml
 
   always:
-    - name: Attempt restoration of FCGI, task server and legacy backend services first
+    - name: Restore backend services first, then reopen the configured frontend if safe
       ansible.builtin.include_tasks: target_write_window_restore.yml
-
-    - name: Attempt restoration of the configured HTTP frontend after healthy backends
-      ansible.builtin.include_tasks: web_service_restore.yml
-      vars:
-        datev_skr04_web_restore_allowed: >-
-          {{ datev_skr04_target_window_backends_ready | default(false) | bool }}
-
-    - name: Verify complete target-window service recovery
-      ansible.builtin.include_tasks: target_write_window_restore_gate.yml
-      vars:
-        datev_skr04_web_restore_allowed: >-
-          {{ datev_skr04_target_window_backends_ready | default(false) | bool }}
