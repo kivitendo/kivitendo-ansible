@@ -52,6 +52,16 @@
 - name: Fail only after all target-window restoration attempts completed
   ansible.builtin.assert:
     that:
+      - >-
+        datev_skr04_web_runtime_unmask_ok | default(false) | bool or
+        (
+          datev_skr04_web_runtime_reseal_ok | default(false) | bool and
+          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') != 'running' and
+          (
+            datev_skr04_other_web_service_unit not in ansible_facts.services or
+            ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
+          )
+        )
       - datev_skr04_target_window_backends_ready | default(false) | bool
       - datev_skr04_web_runtime_unmask_ok | default(false) | bool
       - >-
@@ -72,7 +82,8 @@
         ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
     fail_msg: >-
       One or more services that were running before the target-write freeze could
-      not be restored safely. FCGI/task-server restoration is attempted before
-      runtime masks are removed and the selected HTTP frontend is reopened; the
-      frontend remains closed when required backends are unhealthy. Complete
-      production service recovery before any further migration action.
+      not be restored safely. Any partial runtime-unmask failure is first resealed
+      with both supported frontends stopped and runtime-masked. Backend recovery
+      must succeed before migration-added masks are removed and the selected HTTP
+      frontend is reopened. Complete production service recovery before any
+      further migration action.
