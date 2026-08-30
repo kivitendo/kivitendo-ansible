@@ -1,4 +1,42 @@
 ---
+- name: Verify mandatory filesystem archives contain no symlink or hardlink members
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import sys
+        import tarfile
+
+        for archive_path in sys.argv[1:]:
+            with tarfile.open(archive_path, mode="r:*") as archive:
+                link_count = sum(
+                    1 for member in archive.getmembers()
+                    if member.issym() or member.islnk()
+                )
+            if link_count:
+                print(f"{archive_path}: contains {link_count} link member(s)", file=sys.stderr)
+                raise SystemExit(23)
+      - "{{ datev_skr04_backup_directory }}/kivitendo-installation.tar.gz"
+      - "{{ datev_skr04_backup_directory }}/kivitendo-documents.tar.gz"
+  environment:
+    PYTHONPATH: ""
+    PYTHONHOME: ""
+    PYTHONSTARTUP: ""
+    PYTHONINSPECT: "0"
+  register: datev_skr04_snapshot_archive_link_audit
+  changed_when: false
+
+- name: Bind link-free archive evidence to snapshot finalization
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_snapshot_archive_link_audit.rc | int == 0
+    fail_msg: >-
+      A mandatory installation/document archive contains a symlink or hardlink
+      member. The workflow does not treat link-only references to content outside
+      the captured trees as complete recovery evidence; target creation remains
+      blocked.
+
 - name: Capture the actual snapshot-manifest finalization time
   ansible.builtin.command:
     argv:
@@ -68,6 +106,7 @@
 - name: Prove the finalized snapshot evidence is parseable and time-accurate
   ansible.builtin.assert:
     that:
+      - datev_skr04_snapshot_archive_link_audit.rc | int == 0
       - datev_skr04_snapshot_manifest_final_verified is mapping
       - datev_skr04_snapshot_manifest_final_verified.run_id == datev_skr04_run_id
       - datev_skr04_snapshot_manifest_final_verified.source_database == datev_skr04_source_db
@@ -80,5 +119,6 @@
       - datev_skr04_snapshot_manifest_final_verified.kivitendo_installation_archive_sha256 == datev_skr04_local_backup_checksums.results[0].stat.checksum
       - datev_skr04_snapshot_manifest_final_verified.kivitendo_documents_archive_sha256 == datev_skr04_local_backup_checksums.results[1].stat.checksum
     fail_msg: >-
-      The finalized snapshot manifest is malformed, carries a stale timestamp or
-      no longer matches the mandatory recovery artifacts.
+      The finalized snapshot manifest is malformed, carries a stale timestamp,
+      contains link-only filesystem evidence or no longer matches the mandatory
+      recovery artifacts.
