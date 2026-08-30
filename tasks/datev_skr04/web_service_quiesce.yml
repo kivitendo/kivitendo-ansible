@@ -1,4 +1,8 @@
 ---
+- name: Reset configured web frontend restore state for this window
+  ansible.builtin.set_fact:
+    datev_skr04_web_service_was_running: false
+
 - name: Re-read supported web frontend state before quiescing
   ansible.builtin.service_facts:
 
@@ -13,7 +17,9 @@
     fail_msg: >-
       The selected kivitendo web frontend must be the only supported running
       frontend at the start of a protected quiesce window. Refusing to continue
-      while another supported HTTP write path is active.
+      while another supported HTTP write path is active. The restore flag was
+      reset before this validation, so a failed window cannot start a service
+      that was not accepted as running on entry.
 
 - name: Remember that the configured web frontend must be restored
   ansible.builtin.set_fact:
