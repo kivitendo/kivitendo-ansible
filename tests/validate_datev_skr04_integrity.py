@@ -71,10 +71,14 @@ def main() -> int:
     require(has(t["launcher"],
                 "git show <reviewed-sha>:scripts/run-datev-skr04-reviewed.sh",
                 "cat-file -e", "worktree add --detach", "rev-parse HEAD",
-                "Bootstrapping Ansible from the reviewed worktree"),
-            "reviewed launcher is not anchored in immutable Git objects", failures)
-    require("run-datev-skr04-reviewed.sh" in t["docs"] and "git show" in t["docs"],
-            "operator runbook does not use the immutable launcher entry point", failures)
+                "KIVITENDO_DATEV_CLEAN_ENV",
+                "/usr/bin/env -i",
+                "/bin/bash --noprofile --norc",
+                "Bootstrapping Ansible with worktree-local collections"),
+            "reviewed launcher is not anchored in immutable Git objects and a clean root environment", failures)
+    require("run-datev-skr04-reviewed.sh" in t["docs"] and "git show" in t["docs"] and
+            "/usr/bin/env -i" in t["docs"],
+            "operator runbook does not use the clean immutable launcher entry point", failures)
 
     # The root launcher itself and every executable child must start from an
     # explicit allowlist environment. This is required because Bash consumes
