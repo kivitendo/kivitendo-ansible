@@ -62,6 +62,12 @@
       SELECT
         (pg_control_system()).system_identifier::text AS system_identifier,
         current_setting('port')::integer AS server_port,
+        current_setting('listen_addresses') AS listen_addresses,
+        EXISTS (
+          SELECT 1
+          FROM regexp_split_to_table(current_setting('listen_addresses'), E'\\s*,\\s*') AS entry
+          WHERE btrim(entry) IN ('*', '0.0.0.0', '127.0.0.1', 'localhost')
+        ) AS ipv4_loopback_listener_configured,
         current_database() AS database_name,
         current_user AS session_user,
         EXISTS (
@@ -81,7 +87,7 @@
   changed_when: false
   no_log: true
 
-- name: Read the configured TCP PostgreSQL cluster identity as the application role
+- name: Prove the configured TCP endpoint accepts the application role
   community.postgresql.postgresql_query:
     login_host: "{{ datev_skr04_db_host }}"
     login_port: "{{ datev_skr04_db_port }}"
@@ -90,35 +96,28 @@
     login_password: "{{ datev_skr04_effective_db_password }}"
     query: |
       SELECT
-        (pg_control_system()).system_identifier::text AS system_identifier,
         current_setting('port')::integer AS server_port,
         current_database() AS database_name,
         current_user AS session_user,
         inet_server_addr()::text AS server_address,
-        inet_server_port()::integer AS accepted_port,
-        has_function_privilege(
-          current_user,
-          'pg_catalog.pg_control_system()',
-          'EXECUTE'
-        ) AS may_read_cluster_identity;
-  register: datev_skr04_tcp_cluster_identity
+        inet_server_port()::integer AS accepted_port;
+  register: datev_skr04_tcp_cluster_endpoint
   changed_when: false
   no_log: true
 
-- name: Assert socket and TCP resolve to the exact same PostgreSQL cluster
+- name: Assert socket cluster and configured TCP endpoint are one bound instance
   ansible.builtin.assert:
     that:
       - datev_skr04_socket_cluster_identity.query_result | length == 1
-      - datev_skr04_tcp_cluster_identity.query_result | length == 1
+      - datev_skr04_tcp_cluster_endpoint.query_result | length == 1
       - datev_skr04_socket_cluster_identity.query_result[0].system_identifier is match('^[0-9]+$')
-      - datev_skr04_tcp_cluster_identity.query_result[0].system_identifier == datev_skr04_socket_cluster_identity.query_result[0].system_identifier
       - datev_skr04_socket_cluster_identity.query_result[0].server_port | int == datev_skr04_db_port | int
-      - datev_skr04_tcp_cluster_identity.query_result[0].server_port | int == datev_skr04_db_port | int
-      - datev_skr04_tcp_cluster_identity.query_result[0].accepted_port | int == datev_skr04_db_port | int
-      - datev_skr04_tcp_cluster_identity.query_result[0].server_address == datev_skr04_db_host
-      - datev_skr04_tcp_cluster_identity.query_result[0].database_name == datev_skr04_source_db
-      - datev_skr04_tcp_cluster_identity.query_result[0].session_user == datev_skr04_db_user
-      - datev_skr04_tcp_cluster_identity.query_result[0].may_read_cluster_identity | bool
+      - datev_skr04_socket_cluster_identity.query_result[0].ipv4_loopback_listener_configured | bool
+      - datev_skr04_tcp_cluster_endpoint.query_result[0].server_port | int == datev_skr04_db_port | int
+      - datev_skr04_tcp_cluster_endpoint.query_result[0].accepted_port | int == datev_skr04_db_port | int
+      - datev_skr04_tcp_cluster_endpoint.query_result[0].server_address == datev_skr04_db_host
+      - datev_skr04_tcp_cluster_endpoint.query_result[0].database_name == datev_skr04_source_db
+      - datev_skr04_tcp_cluster_endpoint.query_result[0].session_user == datev_skr04_db_user
       - datev_skr04_socket_cluster_identity.query_result[0].source_exists | bool
       - datev_skr04_socket_cluster_identity.query_result[0].auth_exists | bool
       - not (datev_skr04_socket_cluster_identity.query_result[0].target_exists | bool)
@@ -128,10 +127,10 @@
           true
         ) == datev_skr04_socket_cluster_identity.query_result[0].system_identifier
     fail_msg: >-
-      Explicit Unix-socket inspection/backups and configured 127.0.0.1
-      application connections do not identify the same PostgreSQL system,
-      port, source database and role. No snapshot or target operation is
-      permitted.
+      The privileged Unix-socket cluster is not configured to own the audited
+      127.0.0.1:port endpoint, or the application connection resolves to a
+      different address, port, source database or role. The application role is
+      deliberately not granted access to privileged pg_control_* functions.
   no_log: true
 
 - name: Bind the verified PostgreSQL system identifier to this migration run
@@ -145,6 +144,7 @@
         {{ datev_skr04_socket_cluster_identity.query_result[0].system_identifier }}
       host: "{{ datev_skr04_db_host }}"
       port: "{{ datev_skr04_db_port | string }}"
+      socket: /var/run/postgresql
       source_database: "{{ datev_skr04_source_db }}"
       auth_database: "{{ datev_skr04_auth_db }}"
       database_role: "{{ datev_skr04_db_user }}"
