@@ -16,7 +16,9 @@ The launcher itself must start through an explicit `env -i` boundary. This is
 necessary because a non-interactive Bash processes `BASH_ENV` before the first
 line of a script and utilities such as GNU tar honor environment options. The
 reviewed command below isolates both the `git show` producer and the root Bash
-consumer from the invoking shell.
+consumer from the invoking shell. The invoking shell must also enable
+`pipefail`, so failure to read the reviewed launcher object cannot be hidden by
+a successful empty Bash consumer.
 
 This external trust anchor exists because Ansible must parse a playbook before
 any task inside that playbook can audit itself.
@@ -174,10 +176,12 @@ Keep the fingerprint and apply confirmation empty. Do not use `-e` or
 
 Do **not** invoke `ansible-playbook` directly from `/root/kivitendo-datev`, and
 do not pipe the launcher into an ambient root `bash`. Execute both sides of the
-trust-anchor pipeline with explicit empty environments:
+trust-anchor pipeline with explicit empty environments, and enable `pipefail`
+in the invoking shell so a failed `git show` makes the whole invocation fail:
 
 ```bash
 cd /root/kivitendo-datev
+set -o pipefail
 
 EXPECTED_SHA='<exact-reviewed-40-character-sha>'
 SOURCE_REPO=/root/kivitendo-datev
@@ -210,12 +214,14 @@ LOCAL_VARS_FILE=/root/kivitendo-datev/datev-skr04.local.yml
 ```
 
 The launcher refuses to start without `KIVITENDO_DATEV_CLEAN_ENV=1` from this
-`env -i` boundary. It then creates a detached root-controlled worktree below
-`/root/kivitendo-datev-reviewed/`, copies only the two local operator inputs,
-bootstraps Ansible from reviewed requirements and executes the reviewed playbook.
-It preserves the reviewed worktree and writes the Ansible log back below
-`/root/kivitendo-datev/` for audit. A failed log writer makes the launcher fail
-even when Ansible itself returned zero.
+`env -i` boundary. The `pipefail` setting is mandatory: if the reviewed launcher
+object is missing or unreadable, the command returns nonzero and no empty Bash
+consumer can turn that into a successful preflight. The launcher then creates a
+detached root-controlled worktree below `/root/kivitendo-datev-reviewed/`, copies
+only the two local operator inputs, bootstraps Ansible from reviewed requirements
+and executes the reviewed playbook. It preserves the reviewed worktree and writes
+the Ansible log back below `/root/kivitendo-datev/` for audit. A failed log writer
+makes the launcher fail even when Ansible itself returned zero.
 
 A successful preflight must finish with `changed=0`, `failed=0`,
 `unreachable=0` and print a 64-character source fingerprint. Any source or code
