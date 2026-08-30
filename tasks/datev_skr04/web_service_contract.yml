@@ -20,14 +20,10 @@
     datev_skr04_restartable_web_enablement_states:
       - enabled
       - enabled-runtime
-      - linked
-      - linked-runtime
-      - alias
       - static
       - indirect
       - disabled
       - generated
-      - transient
 
 - name: Read selected web frontend enablement and mask state
   ansible.builtin.command:
@@ -39,7 +35,7 @@
   changed_when: false
   failed_when: false
 
-- name: Require exactly one supported running and restartable kivitendo web frontend
+- name: Require exactly one supported running and safely maskable kivitendo web frontend
   ansible.builtin.assert:
     that:
       - datev_skr04_web_service_unit in ansible_facts.services
@@ -50,6 +46,7 @@
         ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
     fail_msg: >-
       The configured kivitendo web frontend must exist, be running and report a
-      recognized restartable systemd enablement state; the other supported frontend
-      must not be running. masked, masked-runtime, not-found, bad, empty or unknown
-      results are rejected because restoration cannot be guaranteed.
+      reviewed systemd unit-file state that can be runtime-masked and restored.
+      linked, linked-runtime, alias, transient, masked, masked-runtime, not-found,
+      bad, empty and unknown states are rejected. The other supported frontend
+      must not be running.
