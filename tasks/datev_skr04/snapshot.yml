@@ -106,6 +106,8 @@
       ansible.builtin.command:
         argv:
           - pg_dump
+          - --host=/var/run/postgresql
+          - "--port={{ datev_skr04_db_port }}"
           - --format=custom
           - --compress=9
           - --no-owner
@@ -119,6 +121,8 @@
       ansible.builtin.command:
         argv:
           - pg_dump
+          - --host=/var/run/postgresql
+          - "--port={{ datev_skr04_db_port }}"
           - --format=custom
           - --compress=9
           - --no-owner
@@ -228,6 +232,8 @@
     - name: Re-read the source accounting state inside the quiesced window
       become_user: postgres
       community.postgresql.postgresql_query:
+        login_unix_socket: /var/run/postgresql
+        login_port: "{{ datev_skr04_db_port }}"
         login_db: "{{ datev_skr04_source_db }}"
         query: "{{ datev_skr04_source_fingerprint_query }}"
       register: datev_skr04_snapshot_fingerprint_raw
@@ -249,29 +255,65 @@
           Nothing will be created from an ambiguous source state.
 
   always:
-    - name: Restart the dedicated kivitendo FCGI service if it was running before snapshot
+    - name: Attempt FCGI service restoration if it was running before snapshot
       ansible.builtin.service:
         name: "{{ datev_skr04_fcgi_service_name }}"
         state: started
+      register: datev_skr04_fcgi_restore_attempt
+      failed_when: false
       when:
         - datev_skr04_quiesce_source | bool
         - datev_skr04_fcgi_was_running | bool
 
-    - name: Restart the kivitendo task server if it was running before snapshot
+    - name: Attempt task-server restoration if it was running before snapshot
       ansible.builtin.service:
         name: "{{ datev_skr04_task_service_name }}"
         state: started
+      register: datev_skr04_task_restore_attempt
+      failed_when: false
       when:
         - datev_skr04_quiesce_source | bool
         - datev_skr04_task_was_running | bool
 
-    - name: Restart Apache if it was running before snapshot
+    - name: Attempt Apache restoration if it was running before snapshot
       ansible.builtin.service:
         name: apache2
         state: started
+      register: datev_skr04_apache_restore_attempt
+      failed_when: false
       when:
         - datev_skr04_quiesce_source | bool
         - datev_skr04_apache_was_running | bool
+
+    - name: Re-read service state after every restoration attempt
+      ansible.builtin.service_facts:
+
+    - name: Fail only after every previously running service had a restore attempt
+      ansible.builtin.assert:
+        that:
+          - >-
+            not (datev_skr04_fcgi_was_running | bool) or
+            (
+              not (datev_skr04_fcgi_restore_attempt.failed | default(false) | bool) and
+              ansible_facts.services.get(datev_skr04_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+            )
+          - >-
+            not (datev_skr04_task_was_running | bool) or
+            (
+              not (datev_skr04_task_restore_attempt.failed | default(false) | bool) and
+              ansible_facts.services.get(datev_skr04_task_service_name + '.service', {}).get('state', '') == 'running'
+            )
+          - >-
+            not (datev_skr04_apache_was_running | bool) or
+            (
+              not (datev_skr04_apache_restore_attempt.failed | default(false) | bool) and
+              ansible_facts.services.get('apache2.service', {}).get('state', '') == 'running'
+            )
+        fail_msg: >-
+          One or more services that were running before the snapshot could not
+          be restored. All FCGI, task-server and Apache restore attempts have
+          completed; the migration stops here so service recovery can be handled
+          explicitly before any target operation.
 
 - name: Calculate SHA-256 checksums for mandatory database backups
   ansible.builtin.stat:
