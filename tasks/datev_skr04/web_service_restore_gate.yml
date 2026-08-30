@@ -2,28 +2,25 @@
 - name: Re-read configured web frontend state after restoration handling
   ansible.builtin.service_facts:
 
-- name: Require safe configured web frontend restoration state
+- name: Require successful safe web and backend recovery after the snapshot window
   ansible.builtin.assert:
     that:
+      - datev_skr04_web_runtime_unmask_ok | default(false) | bool
+      - datev_skr04_web_restore_allowed | default(true) | bool
       - >-
         datev_skr04_other_web_service_unit not in ansible_facts.services or
         ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
       - >-
         not (datev_skr04_web_service_was_running | default(false) | bool) or
         (
-          (
-            datev_skr04_web_restore_allowed | default(true) | bool and
-            datev_skr04_web_restore_safe | default(false) | bool and
-            not (datev_skr04_web_service_restore_attempt.failed | default(false) | bool) and
-            ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
-          ) or
-          (
-            not (datev_skr04_web_restore_allowed | default(true) | bool) and
-            ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') != 'running'
-          )
+          datev_skr04_web_restore_safe | default(false) | bool and
+          not (datev_skr04_web_service_restore_attempt.failed | default(false) | bool) and
+          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
         )
     fail_msg: >-
-      The snapshot window did not end in a safe web-frontend state. The alternate
-      supported frontend must remain inactive. The selected frontend is reopened
-      only when restoration was explicitly allowed and safe; when backend
-      recovery is unhealthy it must remain closed for manual service recovery.
+      Snapshot recovery did not return production to its accepted entry state.
+      The alternate supported frontend must remain inactive, migration-added
+      runtime masks must be removed, required backends must be healthy, and the
+      selected frontend must be restored. When backend recovery is unhealthy the
+      frontend intentionally remains closed, but the migration fails here after
+      recording that safe closed state instead of continuing toward target work.
