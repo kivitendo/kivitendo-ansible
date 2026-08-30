@@ -331,8 +331,8 @@
 - name: Write the final verification report using YAML-safe serialization
   ansible.builtin.copy:
     dest: "{{ datev_skr04_backup_directory }}/verification.yml"
-    owner: postgres
-    group: postgres
+    owner: root
+    group: root
     mode: "0600"
     content: "{{ datev_skr04_verification_report | to_nice_yaml(indent=2) }}"
   no_log: true
@@ -378,17 +378,20 @@
     checksum_algorithm: sha256
   register: datev_skr04_verification_report_state
 
-- name: Require a non-empty regular final verification report
+- name: Require a root-owned non-empty regular final verification report
   ansible.builtin.assert:
     that:
       - datev_skr04_verification_report_state.stat.exists | bool
       - datev_skr04_verification_report_state.stat.isreg | default(false) | bool
       - not (datev_skr04_verification_report_state.stat.islnk | default(false) | bool)
+      - datev_skr04_verification_report_state.stat.pw_name == 'root'
+      - datev_skr04_verification_report_state.stat.gr_name == 'root'
+      - datev_skr04_verification_report_state.stat.mode == '0600'
       - datev_skr04_verification_report_state.stat.size | int > 0
       - datev_skr04_verification_report_state.stat.checksum is match('^[0-9a-f]{64}$')
     fail_msg: >-
-      The final verification report is absent, empty, not a regular file or is
-      reached through a symbolic link.
+      The final verification report is absent, empty, not root-owned 0600,
+      not a regular file or is reached through a symbolic link.
 
 - name: Mark the quarantined parallel client and its evidence ready
   ansible.builtin.set_fact:
