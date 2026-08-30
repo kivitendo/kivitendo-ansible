@@ -80,6 +80,7 @@ def main() -> int:
 
     defaults = read("datev-skr04-defaults.yml")
     playbook = read("datev-skr04-migration.yml")
+    installer = read("main.yml")
     document_store = read("tasks/datev_skr04/document_store_contract.yml")
     cluster = read("tasks/datev_skr04/postgresql_cluster_contract.yml")
     preflight = read("tasks/datev_skr04/preflight.yml")
@@ -140,6 +141,24 @@ def main() -> int:
     require(
         all(token not in document_store for token in ("ansible.builtin.file:", "ansible.builtin.copy:", "ansible.builtin.template:")),
         "read-only live configuration gate contains a filesystem write",
+    )
+    parent_start = installer.find("- name: Create protected kivitendo data parent directory")
+    documents_start = installer.find("- name: Create external kivitendo document directory")
+    parent_block = installer[parent_start:documents_start] if 0 <= parent_start < documents_start else ""
+    require(
+        0 <= parent_start < documents_start,
+        "installer does not create the protected kivitendo data parent before the writable document store",
+    )
+    require(
+        has(
+            parent_block,
+            'path: "{{ kivitendo_document_dir | dirname }}"',
+            "state: directory",
+            "owner: root",
+            "group: root",
+            "mode: '0711'",
+        ),
+        "installer does not provision the document-store parent as root-controlled traverse-only state",
     )
 
     # Exact PostgreSQL cluster contract. pg_control_system is privileged socket-side only.
@@ -288,7 +307,7 @@ def main() -> int:
             print(f" - {failure}", file=sys.stderr)
         return 1
 
-    print(f"SKR04 migration safety contract passed ({len(TEXT_FILES) + 38} structural checks).")
+    print(f"SKR04 migration safety contract passed ({len(TEXT_FILES) + 40} structural checks).")
     return 0
 
 
