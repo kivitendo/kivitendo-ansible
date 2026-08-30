@@ -1,7 +1,10 @@
 ---
 - name: Freeze source writes and execute all target-only operations
   block:
-    - name: Quiesce write-capable kivitendo services for the target-write window
+    - name: Quiesce the configured kivitendo web frontend for the target-write window
+      ansible.builtin.include_tasks: web_service_quiesce.yml
+
+    - name: Quiesce remaining write-capable kivitendo services for the target-write window
       ansible.builtin.include_tasks: target_write_window_quiesce.yml
 
     - name: Revalidate the approved public-schema closing boundary while frozen
@@ -65,5 +68,8 @@
       ansible.builtin.include_tasks: application_role_contract.yml
 
   always:
-    - name: Restore every source service after the target-write window
+    - name: Attempt restoration of the configured kivitendo web frontend
+      ansible.builtin.include_tasks: web_service_restore.yml
+
+    - name: Restore every remaining source service after the target-write window
       ansible.builtin.include_tasks: target_write_window_restore.yml
