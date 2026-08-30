@@ -1,19 +1,11 @@
 ---
 - name: Bind authoritative snapshot backend restore contract
   ansible.builtin.set_fact:
-    datev_skr04_snapshot_backend_restore_items: >-
-      {{
-        (
-          ([{'unit': datev_skr04_snapshot_fcgi_service_name + '.service',
-             'was_running': datev_skr04_snapshot_fcgi_was_running_at_entry | bool}]
-           if (datev_skr04_snapshot_fcgi_service_name + '.service') in (datev_skr04_snapshot_backend_units | default([]))
-           else []) +
-          ([{'unit': datev_skr04_snapshot_task_service_name + '.service',
-             'was_running': datev_skr04_snapshot_task_was_running_at_entry | bool}]
-           if (datev_skr04_snapshot_task_service_name + '.service') in (datev_skr04_snapshot_backend_units | default([]))
-           else [])
-        )
-      }}
+    datev_skr04_snapshot_backend_restore_items:
+      - unit: "{{ datev_skr04_snapshot_fcgi_service_name }}.service"
+        was_running: "{{ datev_skr04_snapshot_fcgi_was_running_at_entry | bool }}"
+      - unit: "{{ datev_skr04_snapshot_task_service_name }}.service"
+        was_running: "{{ datev_skr04_snapshot_task_was_running_at_entry | bool }}"
 
 - name: Remove backend runtime masks and restore only authoritative entry-running services
   ansible.builtin.include_tasks: backend_runtime_restore.yml
