@@ -1,0 +1,45 @@
+---
+- name: Inspect complete application-role capabilities and membership graph
+  become_user: postgres
+  community.postgresql.postgresql_query:
+    login_unix_socket: /var/run/postgresql
+    login_port: "{{ datev_skr04_db_port }}"
+    login_db: postgres
+    query: |
+      SELECT
+        r.rolcanlogin,
+        r.rolcreatedb,
+        r.rolsuper,
+        r.rolcreaterole,
+        r.rolreplication,
+        r.rolbypassrls,
+        (SELECT count(*)::bigint
+           FROM pg_auth_members m
+          WHERE m.member = r.oid) AS roles_granted_to_application,
+        (SELECT count(*)::bigint
+           FROM pg_auth_members m
+          WHERE m.roleid = r.oid) AS members_that_can_assume_application
+      FROM pg_roles r
+      WHERE r.rolname = %(db_user)s;
+    named_args:
+      db_user: "{{ datev_skr04_db_user }}"
+  register: datev_skr04_application_role_contract_state
+  changed_when: false
+
+- name: Enforce isolated LOGIN and CREATEDB-only application role
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_application_role_contract_state.query_result | length == 1
+      - datev_skr04_application_role_contract_state.query_result[0].rolcanlogin | bool
+      - datev_skr04_application_role_contract_state.query_result[0].rolcreatedb | bool
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolsuper | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolcreaterole | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolreplication | bool)
+      - not (datev_skr04_application_role_contract_state.query_result[0].rolbypassrls | bool)
+      - datev_skr04_application_role_contract_state.query_result[0].roles_granted_to_application | int == 0
+      - datev_skr04_application_role_contract_state.query_result[0].members_that_can_assume_application | int == 0
+    fail_msg: >-
+      The persistent kivitendo PostgreSQL role must have LOGIN and CREATEDB only,
+      inherit no other role, and have no role/login that can SET ROLE to it. This
+      protects the supposedly quarantined target from access outside kivitendo's
+      auth mappings.
