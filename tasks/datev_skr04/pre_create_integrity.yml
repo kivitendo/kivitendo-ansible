@@ -48,6 +48,71 @@
       The installed kivitendo revision changed after preflight. The target will
       not be initialized with a different or unaudited code revision.
 
+- name: Reaudit the complete Perl override tree immediately before elevation
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", diff, --name-only, HEAD, --, modules/override]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --exclude-standard, --, modules/override]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --ignored, --exclude-standard, --, modules/override]
+  register: datev_skr04_override_tree_audit_before_create
+  changed_when: false
+
+- name: Refuse override-tree drift immediately before temporary elevation
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim | length == 0
+    fail_msg: >-
+      The modules/override tree changed after preflight or contains untracked or
+      ignored content. Temporary PostgreSQL elevation and native target creation
+      are blocked.
+  loop: "{{ datev_skr04_override_tree_audit_before_create.results }}"
+  loop_control:
+    label: "{{ item.item | join(' ') }}"
+
+- name: Reaudit every Perl source immediately before temporary elevation
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", diff, --name-only, HEAD, --, ":(glob)**/*.pm", ":(glob)**/*.pl"]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --exclude-standard, --, ":(glob)**/*.pm", ":(glob)**/*.pl"]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --ignored, --exclude-standard, --, ":(glob)**/*.pm", ":(glob)**/*.pl"]
+  register: datev_skr04_perl_source_tree_audit_before_create
+  changed_when: false
+
+- name: Refuse Perl-source drift immediately before temporary elevation
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim | length == 0
+    fail_msg: >-
+      A Perl source reachable by the native helper changed after preflight or is
+      untracked/ignored. No privileged native initializer will execute.
+  loop: "{{ datev_skr04_perl_source_tree_audit_before_create.results }}"
+  loop_control:
+    label: "{{ item.item | join(' ') }}"
+
+- name: Reaudit every native SQL input immediately before temporary elevation
+  ansible.builtin.command:
+    argv: "{{ item }}"
+  loop:
+    - [git, -C, "{{ kivitendo_install_dir }}", diff, --name-only, HEAD, --, sql]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --exclude-standard, --, sql]
+    - [git, -C, "{{ kivitendo_install_dir }}", ls-files, --others, --ignored, --exclude-standard, --, sql]
+  register: datev_skr04_sql_source_tree_audit_before_create
+  changed_when: false
+
+- name: Refuse native SQL drift immediately before temporary elevation
+  ansible.builtin.assert:
+    that:
+      - item.stdout | trim | length == 0
+    fail_msg: >-
+      A native schema or upgrade SQL input changed after preflight or is
+      untracked/ignored. Temporary PostgreSQL elevation and target creation are
+      blocked.
+  loop: "{{ datev_skr04_sql_source_tree_audit_before_create.results }}"
+  loop_control:
+    label: "{{ item.item | join(' ') }}"
+
 - name: Revalidate the persistent application-role capability set before creation
   become_user: postgres
   community.postgresql.postgresql_query:
