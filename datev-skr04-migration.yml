@@ -65,6 +65,12 @@
         - always
         - preflight
 
+    - name: Validate target precision before any snapshot or target write
+      ansible.builtin.include_tasks: tasks/datev_skr04/precision_contract.yml
+      tags:
+        - always
+        - preflight
+
     - name: Run the read-only and fail-closed preflight
       ansible.builtin.include_tasks: tasks/datev_skr04/preflight.yml
       tags:
@@ -174,6 +180,9 @@
           - (datev_skr04_target_defaults_verification | default({})).get('verified', false) | bool
           - (datev_skr04_target_defaults_verification | default({})).get('run_id', '') == datev_skr04_run_id
           - (datev_skr04_target_defaults_verification | default({})).get('target_database', '') == datev_skr04_target_db
+          - (datev_skr04_pre_target_auth_verified | default({})).get('verified', false) | bool
+          - (datev_skr04_pre_target_auth_verified | default({})).get('source_client_id', 0) | int == datev_skr04_source_client_id | int
+          - (datev_skr04_pre_target_auth_verified | default({})).get('target_database', '') == datev_skr04_target_db
           - (datev_skr04_cluster_contract | default({})).get('phase', '') == 'pre_create'
           - (datev_skr04_cluster_contract | default({})).get('system_identifier', '') == datev_skr04_bound_system_identifier
           - datev_skr04_application_role_contract_state.query_result | length == 1
@@ -181,9 +190,9 @@
           - not (datev_skr04_application_role_contract_state.query_result[0].role_search_path_overridden | bool)
           - datev_skr04_application_role_contract_state.query_result[0].database_search_path_overrides | int == 0
         fail_msg: >-
-          Apply mode did not complete target, complete-default, cluster, role,
-          schema-path and evidence verification. No access, master-data migration
-          or production cutover is allowed.
+          Apply mode did not complete target, complete-default, frozen-auth,
+          cluster, role, schema-path and evidence verification. No access,
+          master-data migration or production cutover is allowed.
       when: datev_skr04_mode == 'apply'
 
     - name: Confirm that preflight made no changes
@@ -191,7 +200,8 @@
         msg: >-
           Read-only preflight complete. The reviewed orchestration checkout,
           document store, installed privileged source tree, PostgreSQL role graph,
-          schema path, source closing boundary and socket/TCP cluster binding were
-          verified. No target or staging database, auth client, posting, customer,
-          invoice, default-client or task-server change was made.
+          schema path, numeric precision, source closing boundary and socket/TCP
+          cluster binding were verified. No target or staging database, auth
+          client, posting, customer, invoice, default-client or task-server change
+          was made.
       when: datev_skr04_mode == 'preflight'
