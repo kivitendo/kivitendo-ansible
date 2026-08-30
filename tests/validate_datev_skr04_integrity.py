@@ -36,6 +36,7 @@ def main() -> int:
         "public_schema": "tasks/datev_skr04/public_source_schema_contract.yml",
         "role_contract": "tasks/datev_skr04/application_role_contract.yml",
         "preflight": "tasks/datev_skr04/preflight.yml",
+        "strict": "tasks/datev_skr04/strict_environment.yml",
         "pre_create": "tasks/datev_skr04/pre_create_integrity.yml",
         "create": "tasks/datev_skr04/create.yml",
         "helper": "scripts/kivitendo-create-dataset.pl",
@@ -60,6 +61,7 @@ def main() -> int:
     public_schema = texts["public_schema"]
     role_contract = texts["role_contract"]
     preflight = texts["preflight"]
+    strict = texts["strict"]
     pre_create = texts["pre_create"]
     create = texts["create"]
     helper = texts["helper"]
@@ -76,6 +78,7 @@ def main() -> int:
         "public_schema",
         "role_contract",
         "preflight",
+        "strict",
         "pre_create",
         "create",
         "workflow",
@@ -225,6 +228,29 @@ def main() -> int:
             "datev_skr04_public_source_invariants",
         ),
         "authoritative source premise is not revalidated against explicit public-schema tables",
+        failures,
+    )
+    require(
+        has(
+            preflight,
+            "FROM public.chart WHERE charttype = 'A'",
+            "FROM public.acc_trans WHERE transdate < %(fiscal_start)s::date",
+            "FROM public.ar",
+            "FROM public.defaults",
+        ),
+        "mandatory preflight source invariants are not fully bound to the public schema",
+        failures,
+    )
+    for table in ("chart", "acc_trans", "ar", "defaults"):
+        require(
+            re.search(rf"\bFROM\s+{re.escape(table)}\b", preflight, re.IGNORECASE) is None,
+            f"preflight still contains unqualified protected source table {table}",
+            failures,
+        )
+    require(
+        "FROM public.defaults" in strict
+        and re.search(r"\bFROM\s+defaults\b", strict, re.IGNORECASE) is None,
+        "strict-environment defaults cardinality is not bound to public schema",
         failures,
     )
     require(
