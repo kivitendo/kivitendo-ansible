@@ -83,6 +83,7 @@ def main() -> int:
     role_contract = read("tasks/datev_skr04/application_role_contract.yml")
     helper = read("scripts/kivitendo-create-dataset.pl")
     launcher = read("scripts/run-datev-skr04-reviewed.sh")
+    bootstrap = read("scripts/bootstrap-debian-controller.sh")
     fingerprint = read("sql/datev-skr04-source-fingerprint.sql")
     docs = read("docs/DATEV_SKR04_MIGRATION.md")
     installer = read("main.yml")
@@ -94,11 +95,14 @@ def main() -> int:
     require("datev_skr04_expected_orchestration_commit" in defaults and
             "datev_skr04_expected_orchestration_commit" in local_example,
             "reviewed orchestration SHA is not an explicit protected operator input")
-    require(has(launcher, "git show <reviewed-sha>:scripts/run-datev-skr04-reviewed.sh",
-                         "cat-file -e", "worktree add --detach", "rev-parse HEAD",
-                         "Bootstrapping Ansible from the reviewed worktree",
-                         "datev-skr04-migration.yml"),
-            "external launcher does not establish a Git-object trust anchor before Ansible parsing")
+    require(has(launcher,
+                "git show <reviewed-sha>:scripts/run-datev-skr04-reviewed.sh",
+                "cat-file -e", "worktree add --detach --no-checkout", "rev-parse HEAD",
+                "Bootstrapping Ansible with worktree-local collections",
+                "datev-skr04-migration.yml",
+                "KIVITENDO_DATEV_CLEAN_ENV",
+                "/usr/bin/env -i"),
+            "external launcher does not establish the clean Git-object trust anchor before Ansible parsing")
 
     require(has(checkout,
                 "datev_skr04_expected_orchestration_commit is match('^[0-9a-f]{40}$')",
@@ -110,6 +114,38 @@ def main() -> int:
     require("orchestration_checkout_contract.yml" in playbook and
             frozen.count("orchestration_checkout_contract.yml") >= 2,
             "reviewed checkout is not revalidated across write boundaries")
+
+    # Every Git process in the reviewed play, including commands against the
+    # installed kivitendo checkout, inherits immutable config overrides. This
+    # prevents repo-local fsmonitor/hooks/attributes from becoming root code.
+    require(has(playbook,
+                'GIT_CONFIG_NOSYSTEM: "1"',
+                "GIT_CONFIG_GLOBAL: /dev/null",
+                'GIT_CONFIG_COUNT: "4"',
+                "GIT_CONFIG_KEY_0: core.hooksPath",
+                "GIT_CONFIG_VALUE_0: /dev/null",
+                "GIT_CONFIG_KEY_1: core.fsmonitor",
+                'GIT_CONFIG_VALUE_1: "false"',
+                "GIT_CONFIG_KEY_2: core.attributesFile",
+                "GIT_CONFIG_KEY_3: core.sparseCheckout",
+                "GIT_NO_REPLACE_OBJECTS"),
+            "installed-checkout Git operations are not centrally isolated from mutable Git configuration")
+
+    # Controller collections must be reproducible and confined to the reviewed
+    # worktree. No root-global ~/.ansible/collections fallback is accepted.
+    require(has(bootstrap,
+                'COLLECTIONS_DIR="${ANSIBLE_COLLECTIONS_PATH:-${REPOSITORY_ROOT}/.ansible/collections}"',
+                "ANSIBLE_COLLECTIONS_PATH must contain exactly one collection root",
+                "ansible-galaxy\" collection install",
+                "--force",
+                '-p "$COLLECTIONS_DIR"'),
+            "bootstrap does not force Ansible collections into one explicit local collection root")
+    require(has(launcher,
+                'CONTROLLER_HOME="$RUN_DIR/.controller-home"',
+                'COLLECTIONS_DIR="$RUN_DIR/.ansible/collections"',
+                'ANSIBLE_COLLECTIONS_PATH="$COLLECTIONS_DIR"',
+                "ANSIBLE_COLLECTIONS_SCAN_SYS_PATH=false"),
+            "reviewed launcher can reuse root/global Ansible collections")
 
     require("datev_skr04_mode: preflight" in defaults, "preflight is not the default")
     require(has(defaults, "datev_skr04_closed_to: \"2026-07-12\"",
@@ -166,6 +202,15 @@ def main() -> int:
     require(snapshot.count("--format=custom") == 2 and
             snapshot.count("--host=/var/run/postgresql") >= 2,
             "source/auth dumps are not both socket-bound custom-format backups")
+    require(has(snapshot,
+                "Create the unique root-owned migration backup directory",
+                "group: postgres", 'mode: "0710"',
+                "Pre-create only the two PostgreSQL dump files for postgres",
+                "Revoke postgres write ownership from completed database dumps",
+                "Write the root-owned protected snapshot manifest"),
+            "backup run directory/evidence ownership does not prevent postgres from replacing root evidence paths")
+    require("owner: postgres\n    group: postgres\n    mode: \"0700\"" not in snapshot,
+            "backup run directory reverted to postgres-writable ownership")
     require(has(snapshot_gate, "datev_skr04_snapshot_complete", "checksum_algorithm: sha256",
                                "source_dump_sha256", "auth_dump_sha256",
                                "kivitendo_installation_archive_sha256",
@@ -221,7 +266,7 @@ def main() -> int:
             print(f" - {failure}", file=sys.stderr)
         return 1
 
-    print(f"SKR04 migration safety contract passed ({len(TEXT_FILES) + 31} structural checks).")
+    print(f"SKR04 migration safety contract passed ({len(TEXT_FILES) + 34} structural checks).")
     return 0
 
 
