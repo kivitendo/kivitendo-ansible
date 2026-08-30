@@ -79,7 +79,7 @@ def main() -> int:
             ".state == 'running'" in text["contract"],
             "web-service preflight does not require the selected unit to exist and run", failures)
     require("datev_skr04_other_web_service_unit" in text["contract"] and
-            "other supported frontend" in text["contract"],
+            "ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'" in text["contract"],
             "preflight does not reject simultaneous Apache and nginx frontends", failures)
     require("datev_skr04_restartable_web_enablement_states" in text["contract"] and
             "enabled-runtime" in text["contract"] and "linked-runtime" in text["contract"] and
