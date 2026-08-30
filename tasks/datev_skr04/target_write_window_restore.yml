@@ -15,6 +15,8 @@
   failed_when: false
   when: datev_skr04_target_window_task_was_running | default(false) | bool
 
+# Kept for backwards compatibility with repository-managed Apache deployments.
+# On nginx installations this is a no-op because apache2 was not running.
 - name: Attempt Apache restoration after target-write window
   ansible.builtin.service:
     name: apache2
@@ -29,6 +31,12 @@
 - name: Fail only after all target-window restoration attempts completed
   ansible.builtin.assert:
     that:
+      - >-
+        not (datev_skr04_web_service_was_running | default(false) | bool) or
+        (
+          not (datev_skr04_web_service_restore_attempt.failed | default(false) | bool) and
+          ansible_facts.services.get(datev_skr04_web_service_unit, {}).get('state', '') == 'running'
+        )
       - >-
         not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) or
         (
@@ -49,5 +57,6 @@
         )
     fail_msg: >-
       One or more services that were running before the target-write freeze could
-      not be restored. Every restoration attempt completed; production service
+      not be restored. The configured web frontend plus every FCGI, task-server
+      and legacy Apache restoration attempt completed; production service
       recovery must be handled explicitly before any further migration action.
