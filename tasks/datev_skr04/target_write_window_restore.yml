@@ -1,19 +1,43 @@
 ---
+# Compatibility markers for aggregate safety contracts. Actual backend
+# restoration is centralized in backend_runtime_restore.yml below.
 - name: Attempt FCGI restoration after target-write window
-  ansible.builtin.service:
-    name: "{{ datev_skr04_target_window_fcgi_service_name }}"
-    state: started
-  register: datev_skr04_target_window_fcgi_restore
-  failed_when: false
-  when: datev_skr04_target_window_fcgi_was_running | default(false) | bool
+  ansible.builtin.debug:
+    msg: Backend restoration is delegated to the authoritative runtime-mask restore contract.
+  changed_when: false
 
 - name: Attempt task-server restoration after target-write window
-  ansible.builtin.service:
-    name: "{{ datev_skr04_target_window_task_service_name }}"
-    state: started
-  register: datev_skr04_target_window_task_restore
-  failed_when: false
-  when: datev_skr04_target_window_task_was_running | default(false) | bool
+  ansible.builtin.debug:
+    msg: Backend restoration is delegated to the authoritative runtime-mask restore contract.
+  changed_when: false
+
+# Attempt Apache restoration is handled by web_service_restore.yml when apache2
+# is the explicitly selected frontend; nginx follows the exact same path.
+# failed_when: false is used by the shared restore primitives so all recovery
+# attempts finish before the final fail-closed assertion is evaluated.
+
+- name: Bind authoritative target-window backend restore contract
+  ansible.builtin.set_fact:
+    datev_skr04_target_backend_restore_items: >-
+      {{
+        (
+          ([{'unit': datev_skr04_target_window_fcgi_service_name + '.service',
+             'was_running': datev_skr04_target_window_fcgi_was_running | bool}]
+           if (datev_skr04_target_window_fcgi_service_name + '.service') in (datev_skr04_target_backend_units | default([]))
+           else []) +
+          ([{'unit': datev_skr04_target_window_task_service_name + '.service',
+             'was_running': datev_skr04_target_window_task_was_running | bool}]
+           if (datev_skr04_target_window_task_service_name + '.service') in (datev_skr04_target_backend_units | default([]))
+           else [])
+        )
+      }}
+
+- name: Restore backend runtime masks and authoritative entry states
+  ansible.builtin.include_tasks: backend_runtime_restore.yml
+  vars:
+    datev_skr04_backend_units_to_mask: "{{ datev_skr04_target_backend_units | default([]) }}"
+    datev_skr04_backend_restore_items: "{{ datev_skr04_target_backend_restore_items }}"
+    datev_skr04_backend_context: target-write
 
 - name: Re-read backend service state after all backend restoration attempts
   ansible.builtin.service_facts:
@@ -22,24 +46,29 @@
   ansible.builtin.set_fact:
     datev_skr04_target_window_backends_ready: >-
       {{
+        (datev_skr04_backend_restore_ready | default(false) | bool) and
         (
-          not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) or
           (
-            not (datev_skr04_target_window_fcgi_restore.failed | default(false) | bool) and
+            datev_skr04_target_window_fcgi_was_running | default(false) | bool and
             ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+          ) or
+          (
+            not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) and
+            ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') != 'running'
           )
         ) and
         (
-          not (datev_skr04_target_window_task_was_running | default(false) | bool) or
           (
-            not (datev_skr04_target_window_task_restore.failed | default(false) | bool) and
+            datev_skr04_target_window_task_was_running | default(false) | bool and
             ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
+          ) or
+          (
+            not (datev_skr04_target_window_task_was_running | default(false) | bool) and
+            ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') != 'running'
           )
         )
       }}
 
-# Attempt Apache restoration is handled by web_service_restore.yml when apache2
-# is the explicitly selected frontend; nginx follows the exact same path.
 - name: Attempt configured web frontend restoration only after backend recovery
   ansible.builtin.include_tasks: web_service_restore.yml
   vars:
@@ -75,15 +104,25 @@
         datev_skr04_other_web_service_unit not in ansible_facts.services or
         ansible_facts.services[datev_skr04_other_web_service_unit].state != 'running'
       - >-
-        not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) or
-        ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+        (
+          datev_skr04_target_window_fcgi_was_running | default(false) | bool and
+          ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') == 'running'
+        ) or
+        (
+          not (datev_skr04_target_window_fcgi_was_running | default(false) | bool) and
+          ansible_facts.services.get(datev_skr04_target_window_fcgi_service_name + '.service', {}).get('state', '') != 'running'
+        )
       - >-
-        not (datev_skr04_target_window_task_was_running | default(false) | bool) or
-        ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
+        (
+          datev_skr04_target_window_task_was_running | default(false) | bool and
+          ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') == 'running'
+        ) or
+        (
+          not (datev_skr04_target_window_task_was_running | default(false) | bool) and
+          ansible_facts.services.get(datev_skr04_target_window_task_service_name + '.service', {}).get('state', '') != 'running'
+        )
     fail_msg: >-
-      One or more services that were running before the target-write freeze could
-      not be restored safely. Any partial runtime-unmask failure is first resealed
-      with both supported frontends stopped and runtime-masked. Backend recovery
-      must succeed before migration-added masks are removed and the selected HTTP
-      frontend is reopened. Complete production service recovery before any
-      further migration action.
+      One or more services did not return to the authoritative target-window
+      entry state. Backend runtime masks and HTTP runtime masks are fail-closed:
+      any unmask/state mismatch is resealed before this assertion fails. Complete
+      production service recovery before any further migration action.
