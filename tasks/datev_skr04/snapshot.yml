@@ -23,15 +23,16 @@
       - not (datev_skr04_snapshot_directory_states.results[0].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[0].stat.mode == '0755'
       - not (datev_skr04_snapshot_directory_states.results[1].stat.islnk | default(false) | bool)
       - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or (datev_skr04_snapshot_directory_states.results[1].stat.isdir | default(false) | bool)
-      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.pw_name == 'postgres'
+      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.pw_name == 'root'
       - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.gr_name == 'postgres'
-      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.mode == '0700'
+      - not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool) or datev_skr04_snapshot_directory_states.results[1].stat.mode == '0710'
       - not (datev_skr04_snapshot_directory_states.results[2].stat.exists | bool)
       - not (datev_skr04_snapshot_directory_states.results[2].stat.islnk | default(false) | bool)
     fail_msg: >-
       A backup path became a symlink/non-directory, has unexpected ownership or
       mode, or the generated run directory already exists. The workflow will not
-      reuse or overwrite backup evidence.
+      reuse or overwrite backup evidence. The backup root must remain root-owned;
+      postgres receives traverse-only access and can never create/replace paths.
 
 - name: Create the protected kivitendo backup parent when absent
   ansible.builtin.file:
@@ -46,18 +47,62 @@
   ansible.builtin.file:
     path: "{{ datev_skr04_backup_root }}"
     state: directory
-    owner: postgres
+    owner: root
     group: postgres
-    mode: "0700"
+    mode: "0710"
   when: not (datev_skr04_snapshot_directory_states.results[1].stat.exists | bool)
 
-- name: Create the unique protected migration backup directory
+- name: Create the unique root-owned migration backup directory
   ansible.builtin.file:
     path: "{{ datev_skr04_backup_directory }}"
     state: directory
+    owner: root
+    group: postgres
+    mode: "0710"
+
+- name: Pre-create only the two PostgreSQL dump files for postgres
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
     owner: postgres
     group: postgres
-    mode: "0700"
+    mode: "0600"
+    modification_time: preserve
+    access_time: preserve
+  loop:
+    - "{{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+    - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+
+- name: Verify postgres can write only the pre-created dump files, not their directory
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - "{{ datev_skr04_backup_directory }}"
+    - "{{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+    - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+  register: datev_skr04_precreated_dump_states
+
+- name: Assert the evidence directory cannot be rewritten by postgres
+  ansible.builtin.assert:
+    that:
+      - datev_skr04_precreated_dump_states.results[0].stat.isdir | bool
+      - not (datev_skr04_precreated_dump_states.results[0].stat.islnk | default(false) | bool)
+      - datev_skr04_precreated_dump_states.results[0].stat.pw_name == 'root'
+      - datev_skr04_precreated_dump_states.results[0].stat.gr_name == 'postgres'
+      - datev_skr04_precreated_dump_states.results[0].stat.mode == '0710'
+      - datev_skr04_precreated_dump_states.results[1].stat.isreg | bool
+      - not (datev_skr04_precreated_dump_states.results[1].stat.islnk | default(false) | bool)
+      - datev_skr04_precreated_dump_states.results[1].stat.pw_name == 'postgres'
+      - datev_skr04_precreated_dump_states.results[1].stat.mode == '0600'
+      - datev_skr04_precreated_dump_states.results[2].stat.isreg | bool
+      - not (datev_skr04_precreated_dump_states.results[2].stat.islnk | default(false) | bool)
+      - datev_skr04_precreated_dump_states.results[2].stat.pw_name == 'postgres'
+      - datev_skr04_precreated_dump_states.results[2].stat.mode == '0600'
+    fail_msg: >-
+      Backup evidence paths are not fail-closed. The run directory must be
+      root-owned and non-writable by postgres; only the two already-created dump
+      files may temporarily be writable by postgres.
 
 - name: Read current service state before the consistent snapshot
   ansible.builtin.service_facts:
@@ -131,6 +176,16 @@
           - "{{ datev_skr04_auth_db }}"
       changed_when: true
 
+    - name: Revoke postgres write ownership from completed database dumps
+      ansible.builtin.file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - "{{ datev_skr04_backup_directory }}/source-{{ datev_skr04_source_db }}.dump"
+        - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
+
     - name: Capture the installed kivitendo Git revision
       ansible.builtin.command:
         argv:
@@ -167,29 +222,29 @@
       register: datev_skr04_git_diff
       changed_when: false
 
-    - name: Save the installed revision and working-tree status
+    - name: Save the installed revision and working-tree status as root-owned evidence
       ansible.builtin.copy:
         dest: "{{ datev_skr04_backup_directory }}/kivitendo-git-state.txt"
-        owner: postgres
-        group: postgres
+        owner: root
+        group: root
         mode: "0600"
         content: |
           revision: {{ datev_skr04_git_revision.stdout }}
           status:
           {{ datev_skr04_git_status.stdout | indent(2, true) }}
 
-    - name: Save all tracked local kivitendo changes
+    - name: Save all tracked local kivitendo changes as root-owned evidence
       ansible.builtin.copy:
         dest: "{{ datev_skr04_backup_directory }}/kivitendo-local-changes.patch"
-        owner: postgres
-        group: postgres
+        owner: root
+        group: root
         mode: "0600"
         content: "{{ datev_skr04_git_diff.stdout }}\n"
 
     - name: Archive the complete installed kivitendo tree except Git object storage
       ansible.builtin.command:
         argv:
-          - tar
+          - /usr/bin/tar
           - --create
           - --gzip
           - --numeric-owner
@@ -206,7 +261,7 @@
     - name: Archive the configured external kivitendo document store
       ansible.builtin.command:
         argv:
-          - tar
+          - /usr/bin/tar
           - --create
           - --gzip
           - --numeric-owner
@@ -218,11 +273,11 @@
       changed_when: true
       when: datev_skr04_backup_documents | bool
 
-    - name: Protect the local-file snapshot archives
+    - name: Protect the root-written local-file snapshot archives
       ansible.builtin.file:
         path: "{{ item }}"
-        owner: postgres
-        group: postgres
+        owner: root
+        group: root
         mode: "0600"
       loop:
         - "{{ datev_skr04_backup_directory }}/kivitendo-installation.tar.gz"
@@ -324,14 +379,18 @@
     - "{{ datev_skr04_backup_directory }}/auth-{{ datev_skr04_auth_db }}.dump"
   register: datev_skr04_backup_checksums
 
-- name: Assert both database backups are present and non-empty
+- name: Assert both database backups are present and non-empty root-owned files
   ansible.builtin.assert:
     that:
       - datev_skr04_backup_checksums.results | map(attribute='stat.exists') | min
       - datev_skr04_backup_checksums.results | map(attribute='stat.size') | min | int > 0
+      - datev_skr04_backup_checksums.results[0].stat.pw_name == 'root'
+      - datev_skr04_backup_checksums.results[1].stat.pw_name == 'root'
+      - datev_skr04_backup_checksums.results[0].stat.mode == '0600'
+      - datev_skr04_backup_checksums.results[1].stat.mode == '0600'
     fail_msg: >-
-      The mandatory source/auth snapshots are not complete. Target creation is
-      blocked before any database or auth client is added.
+      The mandatory source/auth snapshots are incomplete or remained writable by
+      postgres. Target creation is blocked before any database or auth client is added.
 
 - name: Calculate SHA-256 checksums for mandatory local-file snapshots
   ansible.builtin.stat:
@@ -343,21 +402,26 @@
   register: datev_skr04_local_backup_checksums
   when: datev_skr04_backup_documents | bool
 
-- name: Assert both local-file snapshots are present and non-empty
+- name: Assert both local-file snapshots are present and non-empty root-owned files
   ansible.builtin.assert:
     that:
       - datev_skr04_local_backup_checksums.results | map(attribute='stat.exists') | min
       - datev_skr04_local_backup_checksums.results | map(attribute='stat.size') | min | int > 0
+      - datev_skr04_local_backup_checksums.results[0].stat.pw_name == 'root'
+      - datev_skr04_local_backup_checksums.results[1].stat.pw_name == 'root'
+      - datev_skr04_local_backup_checksums.results[0].stat.mode == '0600'
+      - datev_skr04_local_backup_checksums.results[1].stat.mode == '0600'
     fail_msg: >-
-      The installed kivitendo tree or external document snapshot is incomplete.
-      Target creation is blocked before any database or auth client is added.
+      The installed kivitendo tree or external document snapshot is incomplete
+      or not root-protected. Target creation is blocked before any database or
+      auth client is added.
   when: datev_skr04_backup_documents | bool
 
-- name: Write the protected snapshot manifest
+- name: Write the root-owned protected snapshot manifest
   ansible.builtin.copy:
     dest: "{{ datev_skr04_backup_directory }}/manifest.yml"
-    owner: postgres
-    group: postgres
+    owner: root
+    group: root
     mode: "0600"
     content: |
       version: 2
