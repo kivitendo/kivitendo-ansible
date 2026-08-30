@@ -66,6 +66,9 @@ def main() -> int:
     require("datev_skr04_web_service_unit in ansible_facts.services" in text["contract"] and
             ".state == 'running'" in text["contract"],
             "web-service preflight does not require the selected unit to exist and run", failures)
+    require("datev_skr04_other_web_service_unit" in text["contract"] and
+            "other supported frontend must not be running" in text["contract"],
+            "preflight does not reject simultaneous Apache and nginx frontends", failures)
 
     require(ordered(text["playbook"],
                     "web_service_contract.yml",
@@ -79,8 +82,10 @@ def main() -> int:
             "snapshot is not enclosed by explicit web-service quiesce/restoration", failures)
 
     require("state: stopped" in text["quiesce"] and
-            "Require the configured web frontend to remain quiesced" in text["quiesce"],
+            "Require all supported web frontend write paths to remain quiesced" in text["quiesce"],
             "configured web frontend is not fail-closed when quiescing", failures)
+    require(text["quiesce"].count("datev_skr04_other_web_service_unit") >= 2,
+            "alternate supported frontend is not checked before and after quiescing", failures)
     require("failed_when: false" in text["restore"],
             "web restoration can prevent remaining service restore attempts", failures)
     require("Require the configured web frontend to be restored" in text["restore_gate"],
