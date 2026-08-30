@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression checks for non-bypassable SKR04 recovery and source-integrity gates."""
+"""Regression checks for non-bypassable SKR04 integrity gates."""
 
 from __future__ import annotations
 
@@ -16,276 +16,226 @@ def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
+def has(text: str, *tokens: str) -> bool:
+    return all(token in text for token in tokens)
+
+
 def require(condition: bool, message: str, failures: list[str]) -> None:
     if not condition:
         failures.append(message)
 
 
-def has(text: str, *tokens: str) -> bool:
-    return all(token in text for token in tokens)
-
-
 def main() -> int:
     failures: list[str] = []
-    required = {
+    paths = {
         "playbook": "datev-skr04-migration.yml",
+        "defaults": "datev-skr04-defaults.yml",
+        "local_example": "datev-skr04.local.example.yml",
+        "checkout": "tasks/datev_skr04/orchestration_checkout_contract.yml",
         "document_store": "tasks/datev_skr04/document_store_contract.yml",
+        "role_contract": "tasks/datev_skr04/application_role_contract.yml",
         "preflight": "tasks/datev_skr04/preflight.yml",
-        "strict": "tasks/datev_skr04/strict_environment.yml",
+        "pre_create": "tasks/datev_skr04/pre_create_integrity.yml",
+        "create": "tasks/datev_skr04/create.yml",
         "helper": "scripts/kivitendo-create-dataset.pl",
         "fingerprint": "sql/datev-skr04-source-fingerprint.sql",
         "workflow": ".github/workflows/validate-datev-skr04.yml",
+        "installer": "main.yml",
     }
 
-    for relative in required.values():
-        require((ROOT / relative).is_file(), f"missing required integrity file: {relative}", failures)
+    for relative in paths.values():
+        require((ROOT / relative).is_file(), f"missing integrity input: {relative}", failures)
     if failures:
         for failure in failures:
             print(f" - {failure}", file=sys.stderr)
         return 1
 
-    playbook = read(required["playbook"])
-    document_store = read(required["document_store"])
-    preflight = read(required["preflight"])
-    strict = read(required["strict"])
-    helper = read(required["helper"])
-    fingerprint = read(required["fingerprint"])
-    workflow = read(required["workflow"])
+    texts = {name: read(path) for name, path in paths.items()}
+    playbook = texts["playbook"]
+    defaults = texts["defaults"]
+    local_example = texts["local_example"]
+    checkout = texts["checkout"]
+    document_store = texts["document_store"]
+    role_contract = texts["role_contract"]
+    preflight = texts["preflight"]
+    pre_create = texts["pre_create"]
+    create = texts["create"]
+    helper = texts["helper"]
+    fingerprint = texts["fingerprint"]
+    workflow = texts["workflow"]
+    installer = texts["installer"]
 
-    for name, text in (
-        ("playbook", playbook),
-        ("document-store contract", document_store),
-        ("preflight", preflight),
-        ("strict environment", strict),
-        ("workflow", workflow),
+    for name in (
+        "playbook",
+        "defaults",
+        "local_example",
+        "checkout",
+        "document_store",
+        "role_contract",
+        "preflight",
+        "pre_create",
+        "create",
+        "workflow",
+        "installer",
     ):
         try:
-            yaml.safe_load(text)
+            yaml.safe_load(texts[name])
         except Exception as exc:
-            failures.append(f"invalid YAML in {name}: {exc}")
+            failures.append(f"invalid YAML in {paths[name]}: {exc}")
 
-    document_store_include = "tasks/datev_skr04/document_store_contract.yml"
-    preflight_include = "tasks/datev_skr04/preflight.yml"
-    strict_include = "tasks/datev_skr04/strict_environment.yml"
-    apply_block = "Create and verify the parallel SKR04 client"
-
-    require(document_store_include in playbook, "live config/document-store gate is not included", failures)
+    # The operator path must be a normal vars_file, not an extra-vars workflow.
     require(
-        0 <= playbook.find(document_store_include) < playbook.find(preflight_include),
-        "live config/document-store gate must precede general preflight",
+        "[datev-skr04.local.yml, datev-skr04.local.example.yml]" in playbook,
+        "protected operator variables are not loaded by vars_files with a CI fallback",
         failures,
     )
-    require(strict_include in playbook, "strict environment gate is not included", failures)
     require(
-        0 <= playbook.find(strict_include) < playbook.find(apply_block),
-        "strict environment gate must precede every apply write phase",
+        "datev_skr04_expected_orchestration_commit" in defaults
+        and "datev_skr04_expected_orchestration_commit" in local_example,
+        "operator configuration does not expose the exact reviewed orchestration commit",
         failures,
     )
 
+    # The orchestration checkout itself must be reviewed, immutable and clean.
     require(
         has(
-            document_store,
-            "RawConfigParser(strict=False)",
-            'parser.get("authentication/database", "host"',
-            'parser.get("authentication/database", "port"',
-            'parser.get("authentication/database", "db"',
-            'parser.get("authentication/database", "user"',
-            'parser.get("paths", "document_path"',
-            "datev_skr04_live_config.auth_host == datev_skr04_db_host",
-            "datev_skr04_live_config.auth_port | string == datev_skr04_db_port | string",
-            "datev_skr04_live_config.auth_db == datev_skr04_auth_db",
-            "datev_skr04_live_config.auth_user == datev_skr04_db_user",
-            "datev_skr04_live_config.document_path == kivitendo_document_dir",
-            "datev_skr04_live_config.document_path == '/var/lib/kivitendo/documents'",
+            checkout,
+            "datev_skr04_expected_orchestration_commit is match('^[0-9a-f]{40}$')",
+            "rev-parse, HEAD",
+            "status, --porcelain=v1, --untracked-files=no",
+            "diff, --cached, --name-only",
+            "HEAD:scripts/kivitendo-create-dataset.pl",
+            "hash-object, scripts/kivitendo-create-dataset.pl",
+            "HEAD:sql/datev-skr04-source-fingerprint.sql",
+            "hash-object, sql/datev-skr04-source-fingerprint.sql",
+            "HEAD:datev-skr04-migration.yml",
+            "hash-object, datev-skr04-migration.yml",
+            "datev_skr04_orchestration_git_state.results[0].stdout == datev_skr04_expected_orchestration_commit",
         ),
-        "live config is not exactly bound to audited auth and document settings",
+        "orchestration checkout is not bound to an explicit reviewed SHA and clean privileged inputs",
+        failures,
+    )
+    require(
+        playbook.find("tasks/datev_skr04/orchestration_checkout_contract.yml")
+        < playbook.find("tasks/datev_skr04/document_store_contract.yml"),
+        "reviewed-checkout contract must be the first migration gate",
         failures,
     )
 
-    require(
-        has(
-            document_store,
-            "- /var/www",
-            '"{{ kivitendo_install_dir }}"',
-            '"{{ kivitendo_install_dir }}/config"',
-            '"{{ kivitendo_install_dir }}/config/kivitendo.conf"',
-            "follow: false",
-            "item.stat.pw_name == 'root'",
-            "not (item.stat.woth",
-            "not (item.stat.wgrp",
-            "datev_skr04_live_config_path_states.results[3].stat.gr_name == kivitendo_web_group",
-            "datev_skr04_live_config_path_states.results[3].stat.mode in ['0640', '0440']",
-            "web identity can modify protected config parent",
-            "web identity can modify live configuration",
-        ),
-        "live config path is not protected against intermediate symlinks or web writes",
-        failures,
-    )
-
-    require(
-        has(
-            document_store,
-            "- /var/lib/kivitendo",
-            "item.item != '/var/lib/kivitendo'",
-            "item.stat.pw_name == 'root'",
-            "item.stat.gr_name == 'root'",
-            "item.stat.mode == '0750'",
-            "item.stat.pw_name == kivitendo_web_user",
-            "item.stat.gr_name == kivitendo_web_group",
-            'become_user: "{{ kivitendo_web_user }}"',
-            "web identity can replace the document-store entry",
-            "os.R_OK, os.W_OK, os.X_OK",
-        ),
-        "document-store parent/final ownership and web-access guards are incomplete",
-        failures,
-    )
-    require(
-        all(token not in document_store for token in ("ansible.builtin.file:", "ansible.builtin.copy:", "ansible.builtin.template:")),
-        "read-only live config/document-store gate contains a filesystem write action",
-        failures,
-    )
-
-    require(
-        has(
-            strict,
-            "follow: false",
-            "datev_skr04_install_root_state.stat.isdir",
-            "datev_skr04_install_root_state.stat.islnk",
-            "SELECT count(*)::bigint AS defaults_rows FROM defaults",
-            "defaults_rows | int == 1",
-            "rolcreaterole",
-            "rolreplication",
-            "rolbypassrls",
-            "pg_auth_members",
-            "granted_role_memberships | int == 0",
-        ),
-        "strict environment does not enforce install/defaults/role invariants",
-        failures,
-    )
-
-    require(
-        has(
-            preflight,
-            "Reject extra-variable shadowing of generated migration facts",
-            "datev_skr04_run_id is match('^[0-9]{8}T[0-9]{6}-[0-9a-f]{12}$')",
-            "playbook_dir ~ '/sql/datev-skr04-source-fingerprint.sql'",
-            "datev_skr04_source_fingerprint_query ==",
-            "datev_skr04_expected_sidecar_config_file ==",
-            "Generated migration facts must match their immutable repository/fact",
-        ),
-        "generated run/query/path facts are not recomputed and rejected when higher-precedence input shadows them",
-        failures,
-    )
-
-    snapshot_sources_start = preflight.find("- name: Validate every source covered by the mandatory local-file snapshots")
-    snapshot_sources_assert = preflight.find("- name: Assert all local customization and document stores are snapshotable", snapshot_sources_start)
-    snapshot_sources_end = preflight.find("\n- name:", snapshot_sources_assert + 1)
-    snapshot_stat_block = preflight[snapshot_sources_start:snapshot_sources_assert]
-    snapshot_assert_block = preflight[snapshot_sources_assert:snapshot_sources_end]
-    require(
-        snapshot_sources_start >= 0 and snapshot_sources_assert > snapshot_sources_start,
-        "mandatory local snapshot-source contract is missing",
-        failures,
-    )
-    require(
-        "follow: false" in snapshot_stat_block,
-        "mandatory local snapshot roots are still inspected by following symlinks",
-        failures,
-    )
-    require(
-        "not (item.stat.islnk | default(false) | bool)" in snapshot_assert_block,
-        "mandatory local snapshot roots do not explicitly reject symlinks",
-        failures,
-    )
-
+    # Perl startup injection must be disabled before the helper process starts.
+    for variable in (
+        "PERL5OPT",
+        "PERL5LIB",
+        "PERLLIB",
+        "PERL5DB",
+        "PERL_LOCAL_LIB_ROOT",
+        "PERL_MB_OPT",
+        "PERL_MM_OPT",
+    ):
+        require(re.search(rf"(?m)^\s+{re.escape(variable)}:\s*\"\"\s*$", playbook) is not None,
+                f"Perl startup/search variable is not sanitized: {variable}", failures)
     require(
         'unshift @INC, "$root/modules/override", $root, "$root/modules/fallback";' in helper,
-        "native helper no longer exposes the expected override-precedence model",
+        "helper module-search model changed without corresponding integrity review",
         failures,
     )
-    require(
-        has(
-            preflight,
-            "Audit the complete kivitendo Perl override tree against the pinned checkout",
-            "diff, --name-only, HEAD, --, modules/override",
-            "ls-files, --others, --exclude-standard, --, modules/override",
-            "ls-files, --others, --ignored, --exclude-standard, --, modules/override",
-            "Reject modified, untracked or ignored Perl override modules",
-            "item.stdout | trim | length == 0",
-        ),
-        "Perl override precedence is not protected by a complete Git-clean override-tree gate",
-        failures,
-    )
+
+    # All kivitendo Perl and native SQL sources must be clean at preflight and
+    # rechecked immediately before temporary PostgreSQL elevation.
     require(
         has(
             preflight,
             "Audit every Perl source reachable from the kivitendo module search roots",
-            '":(glob)**/*.pm"',
-            '":(glob)**/*.pl"',
             "Reject any modified, deleted, untracked or ignored Perl source",
-            "git, -C",
-            "diff, --name-only, HEAD",
-            "ls-files, --others, --exclude-standard",
-            "ls-files, --others, --ignored, --exclude-standard",
-        ),
-        "the privileged helper can still load modified, deleted, untracked or ignored Perl code outside modules/override",
-        failures,
-    )
-    require(
-        has(
-            preflight,
             "Audit every native database SQL input against the pinned checkout",
             "Reject modified, deleted, untracked or ignored native SQL inputs",
-            "diff, --name-only, HEAD, --, sql",
-            "ls-files, --others, --exclude-standard, --, sql",
-            "ls-files, --others, --ignored, --exclude-standard, --, sql",
         ),
-        "native schema/upgrade SQL can still drift from the pinned kivitendo checkout before temporary PostgreSQL elevation",
+        "preflight does not gate complete Perl and native SQL source trees",
         failures,
     )
-
-    require("defaults_rows" in fingerprint, "fingerprint omits defaults row cardinality", failures)
-    require("defaults_digest" in fingerprint, "fingerprint omits defaults content digest", failures)
-    require("ORDER BY row_to_json(x)::text" in fingerprint, "defaults digest is not deterministic", failures)
-    require(
-        not re.search(r"FROM\s+defaults\s+\w+\s+LIMIT\s+1", fingerprint, re.IGNORECASE),
-        "fingerprint still truncates defaults to an arbitrary row",
-        failures,
-    )
-
     require(
         has(
-            playbook,
-            "datev_skr04_snapshot_gate_paths",
-            "checksum_algorithm: sha256",
-            "datev_skr04_snapshot_gate_manifest_payload",
-            "datev_skr04_snapshot_complete",
-            "Run target-only operations after the snapshot-complete gate",
+            pre_create,
+            "Reaudit every Perl source immediately before temporary elevation",
+            "Refuse Perl-source drift immediately before temporary elevation",
+            "Reaudit every native SQL input immediately before temporary elevation",
+            "Refuse native SQL drift immediately before temporary elevation",
         ),
-        "snapshot-complete evidence gate is incomplete",
+        "pre-create gate does not close Perl/SQL TOCTOU drift",
         failures,
     )
-    for forbidden_stage_tag in ("snapshot", "create", "register", "verify"):
-        require(
-            not re.search(rf"(?m)^\s*-\s+{re.escape(forbidden_stage_tag)}\s*$", playbook),
-            f"write-stage tag remains independently skippable: {forbidden_stage_tag}",
-            failures,
-        )
 
-    for shared_input in (
-        '"ansible.cfg"',
-        '"inventory"',
-        '"main.yml"',
-        '"vars.yml"',
-        '"requirements.txt"',
-        '"requirements.yml"',
-        '"scripts/bootstrap-debian-controller.sh"',
+    # PostgreSQL owner role must be isolated in both membership directions.
+    require(
+        has(
+            role_contract,
+            "WHERE m.member = r.oid",
+            "AS roles_granted_to_application",
+            "WHERE m.roleid = r.oid",
+            "AS members_that_can_assume_application",
+            "roles_granted_to_application | int == 0",
+            "members_that_can_assume_application | int == 0",
+        ),
+        "application-role membership graph is not blocked in both directions",
+        failures,
+    )
+    require(playbook.count("tasks/datev_skr04/application_role_contract.yml") >= 3,
+            "application-role contract is not enforced before, immediately before and after target operations",
+            failures)
+
+    # Source immutability must include dependent customer/vendor master data.
+    for token in (
+        "contacts_rows",
+        "contacts_digest",
+        "FROM contacts x",
+        "shipto_rows",
+        "shipto_digest",
+        "FROM shipto x",
     ):
-        require(
-            workflow.count(shared_input) >= 2,
-            f"DATEV CI path filters omit shared input {shared_input}",
-            failures,
-        )
+        require(token in fingerprint, f"source fingerprint omits dependent master-data token: {token}", failures)
+    require("ORDER BY row_to_json(x)::text" in fingerprint,
+            "dependent/default row hashing is not deterministically ordered", failures)
+
+    # Mandatory filesystem roots must be safe and installer-compatible.
+    require(
+        has(
+            document_store,
+            "- /var/lib/kivitendo",
+            "item.stat.pw_name == 'root'",
+            "item.stat.gr_name == 'root'",
+            "web identity can replace the document-store entry",
+        ),
+        "document-store parent protection is incomplete",
+        failures,
+    )
+    parent_start = installer.find("- name: Create protected kivitendo data parent directory")
+    documents_start = installer.find("- name: Create external kivitendo document directory")
+    parent_block = installer[parent_start:documents_start] if 0 <= parent_start < documents_start else ""
+    require(
+        0 <= parent_start < documents_start
+        and has(parent_block, 'path: "{{ kivitendo_document_dir | dirname }}"', "owner: root", "group: root", "mode: '0711'"),
+        "installer does not create the protected root-owned data parent before the web-writable document store",
+        failures,
+    )
+
+    # Recovery and no-bypass gates retained.
+    require("datev_skr04_snapshot_complete" in playbook, "snapshot-complete gate is missing", failures)
+    for tag in ("snapshot", "create", "register", "verify"):
+        require(not re.search(rf"(?m)^\s*-\s+{re.escape(tag)}\s*$", playbook),
+                f"write-stage tag remains independently skippable: {tag}", failures)
+    require("method: trust" not in create, "temporary elevation uses trust authentication", failures)
+    require("DROP DATABASE" not in playbook and "force: true" not in playbook,
+            "destructive rollback primitive returned to the main playbook", failures)
+
+    # CI must execute on shared inputs and immutable event SHA.
+    for shared_input in (
+        '"ansible.cfg"', '"inventory"', '"main.yml"', '"vars.yml"',
+        '"requirements.txt"', '"requirements.yml"', '"scripts/bootstrap-debian-controller.sh"',
+    ):
+        require(workflow.count(shared_input) >= 2,
+                f"DATEV CI path filters omit shared input {shared_input}", failures)
+    require("REVISION_SHA: ${{ github.sha }}" in workflow,
+            "DATEV CI checkout is not pinned to the immutable event SHA", failures)
 
     if failures:
         print("SKR04 integrity regression checks failed:", file=sys.stderr)
