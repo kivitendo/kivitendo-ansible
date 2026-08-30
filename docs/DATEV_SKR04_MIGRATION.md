@@ -33,6 +33,8 @@ The workflow:
   no posting before **13 July 2026**;
 - never changes the source `closedto` itself;
 - requires DATEV support enabled for the new target;
+- requires an explicit write-capable HTTP frontend (`apache2` or `nginx`) that
+  exists and is running during preflight;
 - binds every protected source query explicitly to PostgreSQL `public` schema;
 - pins native/target PostgreSQL sessions to `public,pg_catalog` and rejects
   persistent application-role `search_path` overrides;
@@ -60,7 +62,8 @@ The workflow:
   mandatory and SHA-256 verified before target creation;
 - rejects filesystem backup archives containing symlink or hardlink members, so
   link-only references cannot stand in for uncaptured recovery data;
-- stops Apache, kivitendo FCGI and task server for the consistent snapshot;
+- stops the explicitly configured HTTP frontend, kivitendo FCGI and task server
+  for the consistent snapshot;
 - stops those services again for the final pre-target source gate and keeps them
   stopped throughout **all** target writes and final source verification;
 - attempts restoration of every previously running service before reporting a
@@ -111,7 +114,7 @@ Buchungsstapel 13 and fiscal-year start `20260713`.
 
 - Debian 13 on the current kivitendo host;
 - root access;
-- healthy local PostgreSQL, Apache and kivitendo services;
+- healthy local PostgreSQL, the configured HTTP frontend and kivitendo services;
 - installed kivitendo at `/var/www/kivitendo-erp`;
 - document store at `/var/lib/kivitendo/documents`;
 - sufficient space below `/var/backups/kivitendo/datev-skr04`;
@@ -162,11 +165,12 @@ chmod 0600 datev-skr04.local.yml
 ```
 
 Fill in source database, unused target database/client name and DATEV identifiers.
-Set:
+Set the reviewed commit and the actual HTTP frontend explicitly:
 
 ```yaml
 datev_skr04_expected_orchestration_commit: "<exact-reviewed-40-character-sha>"
 datev_skr04_mode: preflight
+datev_skr04_web_service_name: nginx  # use apache2 on Apache deployments
 ```
 
 Keep the fingerprint and apply confirmation empty. Do not use `-e` or
@@ -213,7 +217,7 @@ LOCAL_VARS_FILE=/root/kivitendo-datev/datev-skr04.local.yml
       "$LOCAL_VARS_FILE"
 ```
 
-The launcher refuses to start without `KIVITENDO_DATEV_CLEAN_ENV=1` from this
+The launcher refuses to start without `KIVENDO_DATEV_CLEAN_ENV=1` from this
 `env -i` boundary. The `pipefail` setting is mandatory: if the reviewed launcher
 object is missing or unreadable, the command returns nonzero and no empty Bash
 consumer can turn that into a successful preflight. The launcher then creates a
