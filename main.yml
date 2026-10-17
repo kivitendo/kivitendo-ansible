@@ -220,6 +220,15 @@
         password: "{{ basic_auth.password }}"
       when: use_basic_auth
 
+    - name: Copy over static landing page.
+      ansible.builtin.copy:
+        src:   static-html
+        dest:  /var/www/
+        group: root
+        owner: root
+        mode: "0644"
+        directory_mode: "0755"
+
     - name: Copy over apache config files.
       ansible.builtin.template:
         src: config-files/apache/no-ssl/000-default.conf
