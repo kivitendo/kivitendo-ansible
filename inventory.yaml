@@ -1,0 +1,14 @@
+linux_server:
+  hosts:
+    kivi-server-one:
+      ansible_host: kivi.my.tld
+      ansible_user: root
+      #ansible_port: 222
+      #ansible_ssh_common_args: "-Jjump@10.0.2.1"
+      use_basic_auth: False
+      customer:
+        installssl: True
+        name:    hans
+        email:   hans@localhost.nodomain
+        #repo:    ssh://gitolite@localhost:222/hans
+        #version: hans_basierend_release-4.1.0_20261016
